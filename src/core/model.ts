@@ -1,16 +1,16 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { FORMAT_ID, LEGACY_FORMAT_IDS, MODEL_TARGETS } from "./types.ts";
-import type { Bone, Combo, IkConstraint, Model, ModelTarget, Parameter, PhysicsConstraint, Slot, Warp } from "./types.ts";
+import type { Animation, Bone, IkConstraint, Model, ModelTarget, Parameter, Slot } from "./types.ts";
 
 /** Default Live2D canvas of a new model: 2048 x 2048 pixels, world (0, 0) in the middle. */
 export const DEFAULT_LIVE2D_CANVAS = { width: 2048, height: 2048, originX: 1024, originY: 1024, pixelsPerUnit: 2048 };
 
-export function emptyModel(name: string, target?: ModelTarget): Model {
+export function emptyModel(name: string, target: ModelTarget = "spine"): Model {
   return {
     format: FORMAT_ID,
     name,
-    ...(target ? { target } : {}),
+    target,
     ...(target === "live2d" ? { live2d: { canvas: { ...DEFAULT_LIVE2D_CANVAS }, parts: [], deformers: [] } } : {}),
     images: {},
     bones: [{ id: "root", parent: null, x: 0, y: 0, rotation: 0, scaleX: 1, scaleY: 1, length: 0 }],
@@ -66,6 +66,11 @@ function moveOrphanMotionCurves(model: Model): Model {
 function normalizeFields(raw: unknown): Model {
   if (!raw || typeof raw !== "object") throw new Error("model must be a JSON object");
   const m = raw as Partial<Model>;
+  const legacyBones = (m.meta?.spine as { bones?: Record<string, { color?: string; icon?: string }> } | undefined)?.bones;
+  const boneColor = (b: Partial<Bone>) => {
+    const color = b.color ?? legacyBones?.[String(b.id)]?.color;
+    return typeof color === "string" ? { color: color.startsWith("#") ? color : `#${color}` } : {};
+  };
   const bones: Bone[] = (Array.isArray(m.bones) ? m.bones : []).map((b: Partial<Bone>) => ({
     id: String(b.id),
     parent: b.parent ?? null,
@@ -77,6 +82,8 @@ function normalizeFields(raw: unknown): Model {
     ...(b.shearX ? { shearX: b.shearX } : {}),
     ...(b.shearY ? { shearY: b.shearY } : {}),
     length: b.length ?? 0,
+    ...boneColor(b),
+    ...((b.icon ?? legacyBones?.[String(b.id)]?.icon) ? { icon: b.icon ?? legacyBones?.[String(b.id)]?.icon } : {}),
     ...(b.inherit && b.inherit !== "normal" ? { inherit: b.inherit } : {}),
     ...(b.skin ? { skin: true } : {}),
   }));
@@ -94,13 +101,14 @@ function normalizeFields(raw: unknown): Model {
   return {
     format: m.format && !LEGACY_FORMAT_IDS.includes(m.format) ? m.format : FORMAT_ID,
     name: m.name ?? "untitled",
-    ...(MODEL_TARGETS.includes(m.target as ModelTarget) ? { target: m.target } : {}),
+    // files without a target (older versions): Live2D when they have a Live2D rig, else Spine
+    target: MODEL_TARGETS.includes(m.target as ModelTarget) ? m.target! : m.live2d || Object.values(m.attachments ?? {}).some((a) => a?.live2d) ? "live2d" : "spine",
     ...(m.meta ? { meta: m.meta } : {}),
     images: m.images ?? {},
     bones,
     slots,
     attachments: m.attachments ?? {},
-    animations: m.animations ?? {},
+    animations: withoutSpringTracks(m.animations ?? {}),
     ...(m.events && typeof m.events === "object" && Object.keys(m.events).length ? { events: m.events } : {}),
     ...(Array.isArray(m.ik) && m.ik.length
       ? {
@@ -117,9 +125,6 @@ function normalizeFields(raw: unknown): Model {
             ...(c.skin ? { skin: true } : {}),
           })),
         }
-      : {}),
-    ...(Array.isArray(m.physics) && m.physics.length
-      ? { physics: m.physics.map((c: Partial<PhysicsConstraint>) => ({ ...PHYSICS_DEFAULTS, ...c, id: String(c.id), bones: Array.isArray(c.bones) ? c.bones.map(String) : [] })) }
       : {}),
     ...normalizeParams(m),
     ...(m.live2d && typeof m.live2d === "object" ? { live2d: m.live2d } : {}),
@@ -138,43 +143,24 @@ function normalizeFields(raw: unknown): Model {
   };
 }
 
-/** Adds parameters/warps from raw JSON (defaults filled) to a normalized model. */
-function normalizeParams(m: Partial<Model>): Pick<Model, "parameters" | "warps" | "combos"> {
-  const out: Pick<Model, "parameters" | "warps" | "combos"> = {};
-  if (Array.isArray(m.combos) && m.combos.length) {
-    out.combos = m.combos.map((c: Partial<Combo>) => ({
-      id: String(c.id),
-      params: Array.isArray(c.params) ? c.params.map(String) : [],
-      keys: Array.isArray(c.keys) ? c.keys : [],
-    }));
-  }
-  if (Array.isArray(m.parameters) && m.parameters.length) {
-    out.parameters = m.parameters.map((p: Partial<Parameter>) => {
-      const min = p.min ?? 0;
-      const max = p.max ?? 1;
-      return { ...p, id: String(p.id), min, max, default: p.default ?? Math.min(max, Math.max(min, 0)) } as Parameter;
-    });
-  }
-  if (Array.isArray(m.warps) && m.warps.length) {
-    out.warps = m.warps.map((w: Partial<Warp>) => ({
-      id: String(w.id),
-      rect: w.rect ?? { x: 0, y: 0, width: 1, height: 1 },
-      cols: w.cols ?? 2,
-      rows: w.rows ?? 2,
-      targets: Array.isArray(w.targets) ? w.targets.map(String) : [],
-    }));
-  }
-  return out;
+/** Animations without the spring-bone tracks older files may have (Awaken2D's own spring bones are gone). */
+function withoutSpringTracks(anims: Record<string, Animation>): Record<string, Animation> {
+  if (!Object.values(anims).some((a) => a && "physics" in a)) return anims;
+  return Object.fromEntries(Object.entries(anims).map(([k, a]) => [k, (({ physics: _, ...rest }) => rest)(a as Animation & { physics?: unknown })]));
 }
 
-export const PHYSICS_DEFAULTS: Omit<PhysicsConstraint, "id" | "bones"> = {
-  frequency: 2,
-  damping: 0.3,
-  gravity: [0, 0],
-  inertia: 1,
-  mix: 1,
-  limit: 0,
-};
+/** Parameters from raw JSON (defaults filled). */
+function normalizeParams(m: Partial<Model>): Pick<Model, "parameters"> {
+  if (!Array.isArray(m.parameters) || !m.parameters.length) return {};
+  return {
+    parameters: m.parameters.map((p: Partial<Parameter>) => {
+      const min = p.min ?? 0;
+      const max = p.max ?? 1;
+      const { bones: _b, slots: _s, meshes: _m, warps: _w, ...rest } = p as Partial<Parameter> & Record<"bones" | "slots" | "meshes" | "warps", unknown>;
+      return { ...rest, id: String(p.id), min, max, default: p.default ?? Math.min(max, Math.max(min, 0)) } as Parameter;
+    }),
+  };
+}
 
 export interface LoadedModel {
   model: Model;
@@ -209,7 +195,7 @@ export function serializeModel(model: Model): string {
     format: model.format,
     name: model.name,
   };
-  if (model.target) out.target = model.target;
+  out.target = model.target;
   if (model.meta && Object.keys(model.meta).length) out.meta = model.meta;
   if (model.images && Object.keys(model.images).length) out.images = model.images;
   out.bones = model.bones.map((b) => {
@@ -222,6 +208,8 @@ export function serializeModel(model: Model): string {
     if (b.shearX) o.shearX = b.shearX;
     if (b.shearY) o.shearY = b.shearY;
     if (b.length !== 0) o.length = b.length;
+    if (b.color) o.color = b.color;
+    if (b.icon) o.icon = b.icon;
     if (b.inherit && b.inherit !== "normal") o.inherit = b.inherit;
     if (b.skin) o.skin = true;
     return o;
@@ -251,19 +239,8 @@ export function serializeModel(model: Model): string {
     });
   }
   if (model.parameters?.length) out.parameters = model.parameters;
-  if (model.warps?.length) out.warps = model.warps;
-  if (model.combos?.length) out.combos = model.combos;
   if (model.events && Object.keys(model.events).length) out.events = model.events;
   if (model.live2d) out.live2d = model.live2d;
-  if (model.physics?.length) {
-    out.physics = model.physics.map((c) => {
-      const o: Record<string, unknown> = { id: c.id, bones: c.bones };
-      for (const k of ["frequency", "damping", "gravity", "inertia", "mix", "limit"] as const) {
-        if (JSON.stringify(c[k]) !== JSON.stringify(PHYSICS_DEFAULTS[k])) o[k] = c[k];
-      }
-      return o;
-    });
-  }
   if (model.transforms?.length) out.transforms = model.transforms;
   if (model.paths?.length) out.paths = model.paths;
   if (model.spinePhysics?.length) out.spinePhysics = model.spinePhysics;

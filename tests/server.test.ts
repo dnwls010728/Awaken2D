@@ -132,25 +132,28 @@ test("editor server: Spine import (images folder) and export", async () => {
   }
 });
 
-test("editor server: Live2D import (model3.json) and export", async () => {
+test("editor server: Live2D import (.cmo3) and export", async () => {
   const { root, srv, post } = await setup();
   try {
-    const { live2dRig, motion3 } = await import("./live2d-fixture.ts");
+    const { cmo3Fixture } = await import("./cmo3-fixture.ts");
     const { exportLive2DData, writeMoc3 } = await import("../src/live2d/index.ts");
-    mkdirSync(join(root, "l2d", "motion"), { recursive: true });
-    writeFileSync(join(root, "l2d", "f.moc3"), writeMoc3(exportLive2DData(live2dRig(), { name: "f" }).moc));
-    writeFileSync(join(root, "l2d", "t.png"), encodePNG({ width: 1, height: 1, data: new Uint8Array([255, 255, 255, 255]) }));
-    writeFileSync(join(root, "l2d", "motion", "m.motion3.json"), JSON.stringify(motion3()));
-    writeFileSync(join(root, "l2d", "f.model3.json"), JSON.stringify({ Version: 3, FileReferences: { Moc: "f.moc3", Textures: ["t.png"], Motions: { Idle: [{ File: "motion/m.motion3.json" }] } } }));
-    const imp = await post("/api/live2d-import", { source: "l2d/f.model3.json", file: "rigs/f.rig.json" });
+    const { live2dRig } = await import("./live2d-fixture.ts");
+    mkdirSync(join(root, "l2d"), { recursive: true });
+    writeFileSync(join(root, "l2d", "f.cmo3"), cmo3Fixture().file);
+    const imp = await post("/api/live2d-import", { source: "l2d/f.cmo3", file: "rigs/f.rig.json" });
     assert.equal(imp.status, 200, imp.json.error);
-    assert.equal(imp.json.model.slots.length, 4);
-    assert.ok(existsSync(join(root, "rigs", "images", "f", "t.png")));
+    assert.equal(imp.json.model.slots.length, 3);
+    assert.ok(existsSync(join(root, "rigs", "images", "f", "texture_00.png")));
     const exp = await post("/api/live2d-export", { file: "rigs/f.rig.json", out: "export/f", name: "f" });
     assert.equal(exp.status, 200, exp.json.error);
-    for (const f of ["f.model3.json", "f.moc3", "motion/m.motion3.json", "f.textures/t.png"]) assert.ok(existsSync(join(root, "export", "f", f)), f);
+    for (const f of ["f.model3.json", "f.moc3", "f.physics3.json", "f.textures/texture_00.png"]) assert.ok(existsSync(join(root, "export", "f", f)), f);
     assert.equal((await post("/api/live2d-export", { file: "rigs/f.rig.json", out: "../outside" })).status, 403);
-    assert.equal((await post("/api/live2d-import", { source: "l2d/missing.model3.json", file: "rigs/g.rig.json" })).status, 400);
+    assert.equal((await post("/api/live2d-import", { source: "l2d/missing.cmo3", file: "rigs/g.rig.json" })).status, 400);
+    // runtime exports are not imported
+    writeFileSync(join(root, "l2d", "r.moc3"), writeMoc3(exportLive2DData(live2dRig(), { name: "r" }).moc));
+    const rt = await post("/api/live2d-import", { source: "l2d/r.moc3", file: "rigs/r.rig.json" });
+    assert.equal(rt.status, 400);
+    assert.match(rt.json.error, /runtime export/);
   } finally {
     srv.close();
   }

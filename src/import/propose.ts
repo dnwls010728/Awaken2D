@@ -155,7 +155,7 @@ interface PlannedBone {
 export interface ProposeOptions {
   /** Add two-bone IK (with targets) to arm and leg chains, joints bending outward. */
   ik?: boolean;
-  /** Turn tails and other dangling elongated layers into 3-bone spring chains. */
+  /** Turn tails and other dangling elongated layers into 3-bone chains with Spine physics constraints (sway). */
   physics?: boolean;
 }
 
@@ -297,7 +297,7 @@ export function proposeBones(model: Model, opts: ProposeOptions = {}): Proposal 
       }
       const base = l.role === "other" ? l.slot : l.role;
       if (opts.physics) {
-        // dangling part: a 3-segment chain that a spring can bend smoothly
+        // dangling part: a 3-segment chain that physics can bend smoothly
         const ids: string[] = [];
         let parent = best.bone?.id ?? "root";
         for (let k = 0; k < 3; k++) {
@@ -307,7 +307,7 @@ export function proposeBones(model: Model, opts: ProposeOptions = {}): Proposal 
           ids.push(parent);
         }
         binding.set(l.slot, ids);
-        springs.push({ id: uid(`${base}_spring`), bones: ids, name: l.name });
+        springs.push({ id: base, bones: ids, name: l.name });
       } else {
         const id = add(uid(base), best.bone?.id ?? "root", best.start, best.end, `elongated layer "${l.name}" (x${round(l.elongation, 1)})`);
         binding.set(l.slot, [id]);
@@ -326,8 +326,11 @@ export function proposeBones(model: Model, opts: ProposeOptions = {}): Proposal 
     ops.push({ op: "autoWeight", attachment: att, bones: bs, maxInfluences: 2 });
   }
   for (const s of springs) {
-    ops.push({ op: "addPhysics", id: s.id, bones: s.bones, frequency: 2.5, damping: 0.35, inertia: 1, limit: 60 });
-    report.push(`physics ${s.id}: spring chain ${s.bones.join(" -> ")} for "${s.name}" (add gravity to make it droop)`);
+    // Spine physics: each segment sways with the rotation it picks up from its parent (Spine's defaults otherwise)
+    for (const b of s.bones) {
+      ops.push({ op: "setConstraint", kind: "physics", constraint: { id: b, bone: b, rotate: 1, inertia: 0.5, strength: 100, damping: 0.85, mass: 1, wind: 0, gravity: 0, mix: 1 } });
+    }
+    report.push(`physics on ${s.bones.join(" -> ")} for "${s.name}" (Spine physics constraints; add gravity to make it droop)`);
   }
   if (opts.ik) {
     for (const c of chains) {

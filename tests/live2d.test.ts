@@ -5,20 +5,23 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { applyOps, loadModel, normalizeModel, restVertices, serializeModel, validateModel } from "../src/core/index.ts";
 import type { Model, Op } from "../src/core/index.ts";
-import { live2dFrame, partOpacities } from "../src/core/live2d.ts";
+import { live2dFrame, live2dGuides, partOpacities } from "../src/core/live2d.ts";
+import { describeModel } from "../src/core/describe.ts";
+import { parseOverlay, renderPose } from "../src/render/render.ts";
 import { PoseSimulator } from "../src/core/physics.ts";
-import { exportLive2D, exportLive2DData, importLive2D, motionToAnimation, readMoc3, writeMoc3 } from "../src/live2d/index.ts";
+import { exportLive2D, exportLive2DData, importLive2DRuntime, motionToAnimation, readMoc3, writeMoc3 } from "../src/live2d/index.ts";
 import { applyLive2DJson, mocToModel, syncLive2DVertices } from "../src/live2d/import.ts";
 import { encodePNG } from "../src/render/png.ts";
-import { live2dRig, motion3, physics3, pose3 } from "./live2d-fixture.ts";
+import { live2dBlendRig, live2dRig, motion3, physics3, pose3 } from "./live2d-fixture.ts";
 
 const golden = JSON.parse(readFileSync(new URL("./live2d-golden.json", import.meta.url), "utf8"));
+const goldenBlend = JSON.parse(readFileSync(new URL("./live2d-golden-blend.json", import.meta.url), "utf8"));
 const goldenMotion = JSON.parse(readFileSync(new URL("./live2d-golden-motion.json", import.meta.url), "utf8"));
 
 /** Compares a model's Live2D evaluation with the Cubism Core output recorded in live2d-golden.json. */
-function checkGolden(model: Model, label: string, tol = 2e-6): void {
+function checkGolden(model: Model, label: string, tol = 2e-6, data = golden): void {
   const defaults = Object.fromEntries(model.parameters!.map((p) => [p.id, p.default]));
-  for (const s of golden.samples) {
+  for (const s of data.samples) {
     const f = live2dFrame(model, { ...defaults, ...s.params });
     const parts = partOpacities(model.live2d!);
     for (const [id, want] of Object.entries(s.meshes) as Array<[string, { points: number[]; opacity: number; visible: boolean; multiply: number[]; screen: number[] }]>) {
@@ -232,7 +235,7 @@ test("live2d edit ops: keyforms, keys, deformers, parts, parameters", () => {
 
 test("enableLive2D turns a plain model into a Live2D rig that exports and reads back", () => {
   let m = applyOps(
-    { format: "awaken2d/0.1", name: "plain", images: {}, bones: [{ id: "root", parent: null, x: 0, y: 0, rotation: 0, scaleX: 1, scaleY: 1, length: 0 }], slots: [], attachments: {}, animations: {} },
+    { format: "awaken2d/0.1", name: "plain", target: "live2d", images: {}, bones: [{ id: "root", parent: null, x: 0, y: 0, rotation: 0, scaleX: 1, scaleY: 1, length: 0 }], slots: [], attachments: {}, animations: {} },
     [
       { op: "addSlot", id: "a", bone: "root" },
       { op: "addMesh", id: "a", slot: "a", shape: { rect: { x: -50, y: 0, width: 100, height: 200 }, cols: 2, rows: 2 } },
@@ -275,7 +278,7 @@ test("Live2D files: model3.json import and runtime export round trip", () => {
       Groups: [{ Target: "Parameter", Name: "EyeBlink", Ids: ["Eye"] }],
     }),
   );
-  const res = importLive2D(join(src, "f.model3.json"), join(dir, "rig", "f.rig.json"));
+  const res = importLive2DRuntime(join(src, "f.model3.json"), join(dir, "rig", "f.rig.json"));
   assert.deepEqual(res.warnings, []);
   assert.ok(existsSync(join(dir, "rig", "images", "f", "texture_00.png")));
   const { model, baseDir } = loadModel(join(dir, "rig", "f.rig.json"));
@@ -291,7 +294,114 @@ test("Live2D files: model3.json import and runtime export round trip", () => {
   for (const f of ["g.model3.json", "g.moc3", "g.physics3.json", "g.cdi3.json", "g.pose3.json", "motion/m.motion3.json", "g.textures/texture_00.png"]) assert.ok(ex.files.includes(f), f);
   const m3 = JSON.parse(readFileSync(join(out, "g.model3.json"), "utf8"));
   assert.deepEqual(m3.Groups, [{ Target: "Parameter", Name: "EyeBlink", Ids: ["Eye"] }]);
-  const again = importLive2D(join(out, "g.model3.json"), join(dir, "again", "g.rig.json"));
+  const again = importLive2DRuntime(join(out, "g.model3.json"), join(dir, "again", "g.rig.json"));
   checkGolden(again.model, "exported and read back");
   assert.deepEqual(again.model.live2d!.physics, model.live2d!.physics);
+});
+
+test("motion3 export of a loop made in the editor: every curve has a segment and reaches Duration (Cubism Viewer / Framework parse it)", () => {
+  const model = live2dRig();
+  model.animations = {
+    sway: {
+      duration: 4,
+      loop: true,
+      params: {
+        AngleX: [
+          { t: 0, v: -10, ease: [0.42, 0, 0.58, 1] },
+          { t: 2, v: 10, ease: [0.42, 0, 0.58, 1] },
+          { t: 4, v: -10 },
+        ],
+        Eye: [
+          { t: 0, v: 1 },
+          { t: 4, v: 1 },
+        ],
+      },
+    },
+  };
+  const json = exportLive2DData(model, { name: "f" }).motions[0].json;
+  const D = 4 - 1 / 30;
+  assert.ok(Math.abs(json.Meta.Duration - D) < 1e-9);
+  let segments = 0;
+  for (const c of json.Curves as Array<{ Id: string; Segments: number[] }>) {
+    // the Framework reads a segment after the first point, whatever the length: a single-point curve breaks the parse
+    assert.ok(c.Segments.length > 2, `${c.Id} has a segment`);
+    assert.ok(Math.abs(c.Segments[c.Segments.length - 2] - D) < 1e-9, `${c.Id} ends at Duration`);
+    for (let i = 2; i < c.Segments.length; i += c.Segments[i] === 1 ? 7 : 3) segments++;
+  }
+  assert.equal(json.Meta.TotalSegmentCount, segments);
+  // played back (with the closing frame Cubism adds, linear over the last 1/30 s) it is the same motion
+  const back = motionToAnimation(json).anim;
+  const a = model.animations.sway;
+  for (let t = 0; t <= 4; t += 0.01) {
+    for (const p of ["AngleX", "Eye"]) assert.ok(Math.abs(restVertexParam(a, p, t) - restVertexParam(back, p, t)) < 5e-3, `${p} at ${t}`);
+  }
+});
+
+test("Live2D editor flags (lock, label), deformer / glue guides, render overlays and the part tree in describe", () => {
+  let m = live2dRig();
+  m = applyOps(m, [
+    { op: "updatePart", id: "P_face", locked: true, label: "#E5534B" },
+    { op: "updateDeformer", id: "W_face", locked: true, hidden: true },
+    { op: "setLive2DMesh", attachment: "eye", locked: true },
+  ] as Op[]).model;
+  const rig = m.live2d!;
+  assert.equal(rig.parts.find((p) => p.id === "P_face")!.label, "#e5534b");
+  assert.equal(rig.parts.find((p) => p.id === "P_face")!.locked, true);
+  assert.equal(rig.deformers.find((d) => d.id === "W_face")!.locked, true);
+  assert.equal(m.attachments.eye.live2d!.locked, true);
+  assert.throws(() => applyOps(m, [{ op: "updatePart", id: "P_face", label: "red" } as Op]), /#rrggbb/);
+  const cleared = applyOps(m, [{ op: "updatePart", id: "P_face", locked: false, label: null } as Op]).model.live2d!.parts.find((p) => p.id === "P_face")!;
+  assert.ok(!("locked" in cleared) && !("label" in cleared));
+  assert.equal(validateModel(m).filter((i) => i.level === "error").length, 0);
+  // lock and label are editor state: the export is the same without them
+  const unflagged = applyOps(m, [
+    { op: "updatePart", id: "P_face", locked: false, label: null },
+    { op: "updateDeformer", id: "W_face", locked: false },
+    { op: "setLive2DMesh", attachment: "eye", locked: false },
+  ] as Op[]).model;
+  assert.deepEqual(writeMoc3(exportLive2DData(m, { name: "f" }).moc), writeMoc3(exportLive2DData(unflagged, { name: "f" }).moc));
+  // guides: the posed lattices, rotation handles and glued pairs in world space
+  const g = live2dGuides(m, live2dFrame(m, { AngleX: 0, Eye: 1, Arm: 0 }));
+  assert.deepEqual(g.warps.map((w) => [w.id, w.hidden]).sort(), [["W_body", false], ["W_face", true]]);
+  for (const w of g.warps) assert.equal(w.points.length, (w.cols + 1) * (w.rows + 1));
+  assert.equal(g.rotations.length, 1);
+  assert.ok(Math.abs(Math.hypot(...g.rotations[0].up) - 1) < 1e-9);
+  assert.equal(g.glue[0].lines.length, 2);
+  // render overlays
+  assert.deepEqual(parseOverlay("deformers,glue,noart"), { deformers: true, glue: true, noArt: true });
+  assert.throws(() => parseOverlay("deformer"), /unknown overlay/);
+  const plain = renderPose(m, ".", { images: new Map(), overlay: { noArt: true }, size: 64, params: { Eye: 1 } });
+  const guides = renderPose(m, ".", { images: new Map(), overlay: { noArt: true, deformers: true, glue: true }, size: 64, params: { Eye: 1 } });
+  assert.ok(plain.data.every((v) => v === 255), "no art: blank");
+  assert.ok(guides.data.some((v, i) => i % 4 === 1 && v < 250), "guides drawn");
+  // describe: the part tree with what each part holds
+  const text = describeModel(m);
+  assert.match(text, /Parts \(children indented/);
+  assert.match(text, /\n {4}P_face "Face" \(locked, label #e5534b\)/);
+});
+
+test("blend shapes (Cubism 4.2+) pose like the Cubism Core: keyed differences on meshes, warps, rotations, parts and glue, the smallest constraint limit, colors clamped", () => {
+  const m = live2dBlendRig();
+  assert.equal(validateModel(m).filter((i) => i.level === "error").length, 0);
+  checkGolden(m, "blend", 2e-6, goldenBlend);
+  // moc3 round trip (5.0: colors per keyform) keeps the shapes and their look
+  const data = exportLive2DData(m, { name: "f" }).moc;
+  assert.equal(data.version, 5);
+  const back = mocToModel(readMoc3(writeMoc3(data)), { name: "f", textures: ["tex"] }).model;
+  assert.deepEqual(back.parameters!.find((p) => p.id === "Tilt")!.blendShape, { keys: [-1, 0, 1], base: 1 });
+  assert.deepEqual(back.attachments.glow.live2d!.blendShapes, m.attachments.glow.live2d!.blendShapes);
+  assert.deepEqual(back.live2d!.parts.find((p) => p.id === "P_body")!.blendShapes, m.live2d!.parts.find((p) => p.id === "P_body")!.blendShapes);
+  checkGolden(back, "blend reimport", 2e-6, goldenBlend);
+  // renaming a parameter follows it into shapes and constraints; removing one drops them
+  const renamed = applyOps(m, [{ op: "renameParameter", id: "Lim", to: "Limit" }, { op: "renameParameter", id: "Vow", to: "Vowel" }] as Op[]).model;
+  assert.equal(renamed.attachments.glow.live2d!.blendShapes![0].param, "Vowel");
+  assert.equal(renamed.attachments.glow.live2d!.blendShapes![0].constraints![0].param, "Limit");
+  assert.equal(renamed.live2d!.parts.find((p) => p.id === "P_body")!.blendShapes![0].param, "Vowel");
+  const removed = applyOps(m, [{ op: "removeParameter", id: "Vow" }] as Op[]).model;
+  assert.equal(removed.attachments.glow.live2d!.blendShapes, undefined);
+  assert.equal(validateModel(removed).filter((i) => i.level === "error").length, 0);
+  assert.throws(() => applyOps(m, [{ op: "setKeyformKeys", target: "glow", param: "Vow", keys: [0, 1] } as Op]), /blend-shape parameter/);
+  // mesh edits carry the differences: removing a vertex removes it from every shape
+  const trimmed = applyOps(m, [{ op: "removeVertices", attachment: "eye", indices: [3] } as Op]);
+  for (const f of trimmed.model.attachments.eye.live2d!.blendShapes![0].forms) assert.equal(f.points.length, 6);
 });

@@ -10,6 +10,7 @@ export function live2dRig(): Model {
   return {
     format: FORMAT_ID,
     name: "l2d",
+    target: "live2d",
     images: { tex: { path: "tex.png" } },
     bones: [{ id: "root", parent: null, x: 0, y: 0, rotation: 0, scaleX: 1, scaleY: 1, length: 0 }],
     slots: [
@@ -174,4 +175,40 @@ export function physics3() {
 /** Pose groups: the face part and an alternative, switched by the motion's part curves. */
 export function pose3() {
   return { Type: "Live2D Pose", FadeInTime: 0.5, Groups: [[{ Id: "P_face", Link: [] }, { Id: "P_alt", Link: [] }]] };
+}
+
+/**
+ * The fixture rig with blend shapes (Cubism 4.2+) on every kind of object: a blend-shape parameter "Vow" (keys 0, 1)
+ * and "Tilt" (keys -1, 0, 1, base in the middle), constraints from "Lim" and "Eye" (the smallest limit applies).
+ */
+export function live2dBlendRig(): Model {
+  const m = live2dRig();
+  m.parameters!.push(
+    { id: "Vow", min: 0, max: 1, default: 0, decimals: 3, blendShape: { keys: [0, 1], base: 0 } },
+    { id: "Tilt", min: -1, max: 1, default: 0, decimals: 3, blendShape: { keys: [-1, 0, 1], base: 1 } },
+    { id: "Lim", min: 0, max: 1, default: 0, decimals: 3 },
+  );
+  const limits = [
+    { param: "Lim", values: [[0, 1], [1, 0]] as Array<[number, number]> },
+    { param: "Eye", values: [[0, 0.5], [1, 0.8]] as Array<[number, number]> },
+  ];
+  const rig = m.live2d!;
+  m.attachments.glow.live2d!.blendShapes = [
+    { param: "Vow", forms: [{ points: [0, 0, 0, 0, 0, 0, 0, 0] }, { points: [0.03, 0, 0, 0, 0, 0.02, -0.01, 0.04], opacity: -0.2, screen: [2, 0.3, 0.1] }], constraints: limits },
+  ];
+  m.attachments.eye.live2d!.blendShapes = [
+    { param: "Tilt", forms: [{ points: [0.02, 0, 0.02, 0, 0.02, 0, 0.02, 0], drawOrder: 50 }, { points: [0, 0, 0, 0, 0, 0, 0, 0] }, { points: [0, 0.03, 0, 0.03, 0, -0.02, 0, 0] }] },
+  ];
+  const wBody = rig.deformers.find((d) => d.id === "W_body")!;
+  if (wBody.type === "warp") {
+    const n = (wBody.cols + 1) * (wBody.rows + 1) * 2;
+    wBody.blendShapes = [{ param: "Vow", forms: [{ points: new Array(n).fill(0) }, { points: Array.from({ length: n }, (_, k) => (k % 4 === 0 ? 0.02 : 0)), multiply: [-0.3, 0, 0] }], constraints: [limits[0]] }];
+  }
+  const rArm = rig.deformers.find((d) => d.id === "R_arm")!;
+  if (rArm.type === "rotation") {
+    rArm.blendShapes = [{ param: "Tilt", forms: [{ x: 0, y: 0, angle: -15, scale: 0 }, { x: 0, y: 0, angle: 0, scale: 0 }, { x: 0.02, y: 0, angle: 20, scale: 0.0002 }] }];
+  }
+  rig.parts.find((p) => p.id === "P_body")!.blendShapes = [{ param: "Vow", forms: [0, 500] }];
+  rig.glue![0].blendShapes = [{ param: "Tilt", forms: [0.3, 0, -0.2] }];
+  return m;
 }

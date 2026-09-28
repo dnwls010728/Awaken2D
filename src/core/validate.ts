@@ -7,6 +7,7 @@ import { boneOrder, computePose, deformMesh, poseDeform } from "./pose.ts";
 import { samplePoses } from "./physics.ts";
 import { restVertices } from "./params.ts";
 import { targetConflicts } from "./ops.ts";
+import { checkPaths } from "./live2dpath.ts";
 import { AXIS_CHANNELS, BLEND_MODES, FORMAT_ID, INHERITS, SPINE_PHYSICS_SETTINGS, TRANSFORM_PROPERTIES } from "./types.ts";
 import type { Inherit, Key, KeyformGrid, MeshAttachment, Model, TransformProperty } from "./types.ts";
 
@@ -44,6 +45,8 @@ export function validateModel(model: Model, opts: ValidateOptions = {}): Issue[]
     }
     if (b.scaleX === 0 || b.scaleY === 0) err(p, "zero scale makes the bone non-invertible");
     if (b.length < 0) warn(`${p}.length`, "negative length");
+    if (b.color !== undefined && !isColor(b.color)) err(`${p}.color`, `invalid color "${b.color}"`);
+    if (b.icon !== undefined && !/^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(b.icon)) err(`${p}.icon`, `invalid bone icon "${b.icon}"`);
   });
   const roots = model.bones.filter((b) => b.parent === null);
   if (model.bones.length === 0) err("bones", "model has no bones");
@@ -170,128 +173,15 @@ export function validateModel(model: Model, opts: ValidateOptions = {}): Issue[]
       warn(`${p}.bones`, `"${c.bones[1]}" has length 0, so the chain has no tip to place; the parent is aimed instead`);
   });
 
-  // spring bones
-  const physicsIds = new Set<string>();
-  const simulated = new Map<string, string>();
-  (model.physics ?? []).forEach((c, i) => {
-    const p = `physics[${i}](${c.id})`;
-    if (physicsIds.has(c.id)) err(p, `duplicate physics id "${c.id}"`);
-    physicsIds.add(c.id);
-    if (!Array.isArray(c.bones) || !c.bones.length) err(`${p}.bones`, "needs at least one bone");
-    for (const b of c.bones ?? []) {
-      const bone = model.bones.find((x) => x.id === b);
-      if (!bone) err(`${p}.bones`, `unknown bone "${b}"`);
-      else if (!(bone.length > 0)) err(`${p}.bones`, `"${b}" has length 0; spring bones swing their tip, so they need a length`);
-      if (simulated.has(b)) err(`${p}.bones`, `"${b}" is already simulated by "${simulated.get(b)}"`);
-      simulated.set(b, c.id);
-    }
-    if (!num(c.frequency) || c.frequency <= 0) err(`${p}.frequency`, "must be > 0 Hz");
-    else if (c.frequency > 30) warn(`${p}.frequency`, `${c.frequency} Hz is very stiff; the bone will barely move`);
-    if (!num(c.damping) || c.damping < 0) err(`${p}.damping`, "must be >= 0");
-    if (!Array.isArray(c.gravity) || c.gravity.length !== 2 || !num(c.gravity[0]) || !num(c.gravity[1])) err(`${p}.gravity`, "must be [x, y]");
-    if (!num(c.inertia) || c.inertia < 0 || c.inertia > 1) err(`${p}.inertia`, "must be between 0 and 1");
-    if (!num(c.mix) || c.mix < 0 || c.mix > 1) err(`${p}.mix`, "must be between 0 and 1");
-    if (!num(c.limit) || c.limit < 0) err(`${p}.limit`, "must be >= 0 degrees (0 = unlimited)");
-  });
-  for (const c of model.ik ?? []) {
-    for (const b of c.bones) if (simulated.has(b)) warn(`ik(${c.id})`, `bone "${b}" is driven by both IK and physics "${simulated.get(b)}"; physics runs last`);
-  }
-
-  // parameters and warps
+  // parameters
   const paramIds = new Set<string>();
-  const warpIds = new Set<string>();
-  (model.warps ?? []).forEach((w, i) => {
-    const p = `warps[${i}](${w.id})`;
-    if (warpIds.has(w.id)) err(p, `duplicate warp id "${w.id}"`);
-    warpIds.add(w.id);
-    if (!w.rect || !(w.rect.width > 0) || !(w.rect.height > 0)) err(`${p}.rect`, "needs width and height > 0");
-    if (!Number.isInteger(w.cols) || w.cols < 1 || !Number.isInteger(w.rows) || w.rows < 1) err(p, "cols and rows must be integers >= 1");
-    for (const t of w.targets ?? []) if (!model.attachments[t]) err(`${p}.targets`, `unknown attachment "${t}"`);
-    if (!w.targets?.length) warn(`${p}.targets`, "warp deforms nothing (no targets)");
-  });
   (model.parameters ?? []).forEach((prm, i) => {
     const p = `parameters[${i}](${prm.id})`;
     if (paramIds.has(prm.id)) err(p, `duplicate parameter id "${prm.id}"`);
     paramIds.add(prm.id);
     if (!num(prm.min) || !num(prm.max) || prm.min >= prm.max) err(p, "needs min < max");
     else if (!num(prm.default) || prm.default < prm.min || prm.default > prm.max) err(`${p}.default`, `must be within [${prm.min}, ${prm.max}]`);
-    const checkParamKeys = <T>(kp: string, keys: Array<{ at: number; v: T }> | undefined, check: (v: T) => boolean, expect: string) => {
-      if (keys === undefined) return;
-      if (!Array.isArray(keys)) return err(kp, "must be an array of {at, v}");
-      keys.forEach((k, j) => {
-        if (!num(k.at)) err(`${kp}[${j}].at`, "must be a number");
-        else if (k.at < prm.min - 1e-9 || k.at > prm.max + 1e-9) warn(`${kp}[${j}].at`, `${k.at} outside [${prm.min}, ${prm.max}]`);
-        if (j > 0 && k.at < keys[j - 1].at) err(`${kp}[${j}]`, "keys must be sorted by at");
-        if (!check(k.v)) err(`${kp}[${j}].v`, `expected ${expect}`);
-      });
-    };
-    const vec = (v: unknown) => Array.isArray(v) && v.length === 2 && num(v[0]) && num(v[1]);
-    for (const [bone, tl] of Object.entries(prm.bones ?? {})) {
-      if (!boneIds.has(bone)) err(`${p}.bones.${bone}`, `unknown bone "${bone}"`);
-      checkParamKeys(`${p}.bones.${bone}.rotate`, tl.rotate, num, "number");
-      checkParamKeys(`${p}.bones.${bone}.translate`, tl.translate, vec, "[x, y]");
-      checkParamKeys(`${p}.bones.${bone}.scale`, tl.scale, vec, "[sx, sy]");
-    }
-    for (const [slot, tl] of Object.entries(prm.slots ?? {})) {
-      if (!model.slots.some((s) => s.id === slot)) err(`${p}.slots.${slot}`, `unknown slot "${slot}"`);
-      checkParamKeys(`${p}.slots.${slot}.color`, tl.color, isColor, "color");
-      checkParamKeys(`${p}.slots.${slot}.attachment`, tl.attachment, (v) => v === null || (typeof v === "string" && !!model.attachments[v]), "attachment id or null");
-      tl.attachment?.forEach((k) => typeof k.v === "string" && usedAttachments.add(k.v));
-    }
-    for (const [att, keys] of Object.entries(prm.meshes ?? {})) {
-      const a = model.attachments[att];
-      if (!a) {
-        err(`${p}.meshes.${att}`, `unknown attachment "${att}"`);
-        continue;
-      }
-      const n = a.vertices.length;
-      checkParamKeys(`${p}.meshes.${att}`, keys, (v) => Array.isArray(v) && v.every((o) => Array.isArray(o) && Number.isInteger(o[0]) && o[0] >= 0 && o[0] < n && num(o[1]) && num(o[2])), `[[vertexIndex < ${n}, dx, dy], ...]`);
-    }
-    for (const [wid, keys] of Object.entries(prm.warps ?? {})) {
-      const w = model.warps?.find((x) => x.id === wid);
-      if (!w) {
-        err(`${p}.warps.${wid}`, `unknown warp "${wid}"`);
-        continue;
-      }
-      const n = (w.cols + 1) * (w.rows + 1);
-      checkParamKeys(`${p}.warps.${wid}`, keys, (v) => Array.isArray(v) && v.length === n && v.every(vec), `${n} control-point offsets [dx, dy]`);
-    }
   });
-
-  // combination keyforms
-  const cvec = (v: unknown) => Array.isArray(v) && v.length === 2 && num(v[0]) && num(v[1]);
-  const comboIds = new Set<string>();
-  for (const c of model.combos ?? []) {
-    const p = `combos(${c.id})`;
-    if (comboIds.has(c.id)) err(p, "duplicate combo id");
-    comboIds.add(c.id);
-    if (c.params.length < 2 || c.params.length > 3 || new Set(c.params).size !== c.params.length) err(`${p}.params`, "must list 2 or 3 different parameters");
-    const defs = c.params.map((id) => model.parameters?.find((x) => x.id === id));
-    defs.forEach((d, i) => d || err(`${p}.params`, `unknown parameter "${c.params[i]}"`));
-    const seen = new Set<string>();
-    c.keys.forEach((k, i) => {
-      const kp = `${p}.keys[${i}]`;
-      if (!Array.isArray(k.at) || k.at.length !== c.params.length || !k.at.every(num)) return err(`${kp}.at`, `must list ${c.params.length} numbers`);
-      k.at.forEach((v, d) => {
-        const def = defs[d];
-        if (def && (v < Math.min(def.min, def.max) - 1e-9 || v > Math.max(def.min, def.max) + 1e-9)) err(`${kp}.at`, `${def.id} value ${v} outside [${def.min}, ${def.max}]`);
-      });
-      const sig = k.at.join(",");
-      if (seen.has(sig)) err(`${kp}.at`, `duplicate key at (${sig})`);
-      seen.add(sig);
-      for (const bone of Object.keys(k.bones ?? {})) if (!boneIds.has(bone)) err(`${kp}.bones`, `unknown bone "${bone}"`);
-      for (const [att, offs] of Object.entries(k.meshes ?? {})) {
-        const a = model.attachments[att];
-        if (!a) err(`${kp}.meshes`, `unknown attachment "${att}"`);
-        else if (!Array.isArray(offs) || offs.some((o) => !Array.isArray(o) || !Number.isInteger(o[0]) || o[0] < 0 || o[0] >= a.vertices.length)) err(`${kp}.meshes.${att}`, "offsets must be [vertexIndex, dx, dy] with valid indices");
-      }
-      for (const [wid, offs] of Object.entries(k.warps ?? {})) {
-        const w = model.warps?.find((x) => x.id === wid);
-        if (!w) err(`${kp}.warps`, `unknown warp "${wid}"`);
-        else if (!Array.isArray(offs) || offs.length !== (w.cols + 1) * (w.rows + 1) || !offs.every(cvec)) err(`${kp}.warps.${wid}`, `needs ${(w.cols + 1) * (w.rows + 1)} control-point offsets`);
-      }
-    });
-  }
 
   // animations
   for (const [name, anim] of Object.entries(model.animations ?? {})) {
@@ -347,13 +237,6 @@ export function validateModel(model: Model, opts: ValidateOptions = {}): Issue[]
       // values beyond the range are clamped when played (Live2D motions often key past it)
       const out = def ? (keys ?? []).filter((k) => num(k?.v) && (k.v < def.min - 1e-9 || k.v > def.max + 1e-9)).length : 0;
       if (out) warn(`${p}.params.${prm}`, `${out} key(s) outside [${def!.min}, ${def!.max}] (clamped when played)`);
-    }
-    for (const [ph, tl] of Object.entries(anim.physics ?? {})) {
-      const pp = `${p}.physics.${ph}`;
-      if (!physicsIds.has(ph)) err(pp, `unknown physics constraint "${ph}"`);
-      for (const ch of Object.keys(tl)) if (!["mix", "force"].includes(ch)) err(`${pp}.${ch}`, "unknown channel");
-      checkKeys(`${pp}.mix`, tl.mix, (v) => num(v) && (v as number) >= 0 && (v as number) <= 1, "number 0..1");
-      checkKeys(`${pp}.force`, tl.force, vec, "[x, y]");
     }
     const kinds: Array<[string, Record<string, Record<string, unknown>> | undefined, Set<string>, string[]]> = [
       ["transforms", anim.transforms as never, new Set((model.transforms ?? []).map((c) => c.id)), ["rotate", "x", "y", "scaleX", "scaleY", "shearY"]],
@@ -427,12 +310,8 @@ export function validateModel(model: Model, opts: ValidateOptions = {}): Issue[]
     // A mesh driven by one bone and nothing else moves by one affine transform: it can go NaN only through that
     // bone, and it can only flip as a whole (a mirror, not a fold). Those need no per-vertex check, which keeps
     // validation of big art-heavy models fast.
-    const deformed = new Set<string>();
-    for (const p of model.parameters ?? []) for (const a of Object.keys(p.meshes ?? {})) deformed.add(a);
-    for (const w of model.warps ?? []) for (const a of w.targets ?? []) deformed.add(a);
     const slotAttachment = new Map(model.slots.map((s) => [s.id, s.attachment]));
     const rigidBone = (att: string, a: MeshAttachment, fallback: string): string | null => {
-      if (deformed.has(att)) return null;
       let only: string | null = null;
       for (const infl of a.weights) {
         const list = infl?.length ? infl : [[fallback, 1] as [string, number]];
@@ -524,6 +403,34 @@ function validateLive2D(model: Model, err: Report, warn: Report): void {
     const size = g.keys.reduce((n, k) => n * (Array.isArray(k) ? k.length : 1), 1);
     if (forms !== size) err(`${p}.forms`, `the grid has ${size} points but there are ${forms} forms`);
   };
+  // blend shapes: a blend-shape parameter, one form per key, forms the right size, constraints on known parameters
+  const bsParams = new Map((model.parameters ?? []).filter((x) => x.blendShape).map((x) => [x.id, x.blendShape!]));
+  for (const x of model.parameters ?? []) {
+    const b = x.blendShape;
+    if (!b) continue;
+    if (!Array.isArray(b.keys) || !b.keys.length || !b.keys.every(num) || b.keys.some((k, j) => j > 0 && k <= b.keys[j - 1])) err(`parameters.${x.id}.blendShape.keys`, "keys must be strictly increasing numbers");
+    else if (!(Number.isInteger(b.base) && b.base >= 0 && b.base < b.keys.length)) err(`parameters.${x.id}.blendShape.base`, "base must be the index of one of the keys");
+  }
+  const shapes = (p: string, list: Array<{ param: string; forms: unknown[]; constraints?: Array<{ param: string; values: unknown }> }> | undefined, check: (f: unknown, where: string) => void): void => {
+    list?.forEach((sh, i) => {
+      const q = `${p}.blendShapes[${i}]`;
+      const b = bsParams.get(sh.param);
+      if (!b) err(q, `"${sh.param}" is not a blend-shape parameter`);
+      else if (!Array.isArray(sh.forms) || sh.forms.length !== b.keys.length) err(`${q}.forms`, `needs one form per key of ${sh.param} (${b.keys.length})`);
+      sh.forms?.forEach((f, k) => check(f, `${q}.forms[${k}]`));
+      sh.constraints?.forEach((c, k) => {
+        if (!params.has(c.param)) err(`${q}.constraints[${k}]`, `unknown parameter "${c.param}"`);
+        if (!Array.isArray(c.values) || !c.values.length || !c.values.every((v) => Array.isArray(v) && v.length === 2 && v.every(num))) err(`${q}.constraints[${k}].values`, "values must be [value, weight] pairs");
+      });
+    });
+  };
+  const pointsOf = (n: number) => (f: unknown, where: string) => {
+    const pts = (f as { points?: unknown })?.points;
+    if (!Array.isArray(pts) || pts.length !== n || !pts.every(num)) err(`${where}.points`, `needs ${n} numbers`);
+  };
+  const numberForm = (f: unknown, where: string) => {
+    if (!num(f)) err(where, "must be a number");
+  };
   const cycle = (start: string, parentOf: (id: string) => string | null | undefined): boolean => {
     const seen = new Set<string>();
     for (let id: string | null | undefined = start; id; id = parentOf(id)) {
@@ -541,6 +448,7 @@ function validateLive2D(model: Model, err: Report, warn: Report): void {
       if (x.parent !== null && !parts.has(x.parent)) err(`${p}.parent`, `unknown part "${x.parent}"`);
       else if (cycle(x.id, (id) => partById.get(id)?.parent)) err(`${p}.parent`, "part hierarchy cycle");
       grid(p, x.grid, x.drawOrders?.length ?? 0);
+      shapes(p, x.blendShapes as Array<{ param: string; forms: unknown[] }> | undefined, numberForm);
     });
     rig.deformers.forEach((d, i) => {
       const p = `live2d.deformers[${i}](${d.id})`;
@@ -554,9 +462,14 @@ function validateLive2D(model: Model, err: Report, warn: Report): void {
         d.forms?.forEach((f, k) => {
           if (!Array.isArray(f.points) || f.points.length !== n || !f.points.every(num)) err(`${p}.forms[${k}].points`, `needs ${n} numbers (x, y per lattice point)`);
         });
+        shapes(p, d.blendShapes, pointsOf(n));
       } else if (d.type === "rotation") {
         d.forms?.forEach((f, k) => {
           if (![f.x, f.y, f.angle, f.scale].every(num)) err(`${p}.forms[${k}]`, "x, y, angle and scale must be numbers");
+        });
+        shapes(p, d.blendShapes, (f, where) => {
+          const r = f as { x?: unknown; y?: unknown; angle?: unknown; scale?: unknown };
+          if (![r.x, r.y, r.angle, r.scale].every(num)) err(where, "x, y, angle and scale must be numbers");
         });
       } else err(p, `unknown deformer type "${(d as { type: string }).type}"`);
     });
@@ -568,6 +481,7 @@ function validateLive2D(model: Model, err: Report, warn: Report): void {
       else if (g.pairs.length % 2 || g.weights.length !== g.pairs.length) err(p, "pairs are [vertexInA, vertexInB] and weights one per entry");
       else if (g.pairs.some((v, k) => !Number.isInteger(v) || v < 0 || v >= (k % 2 ? b : a).vertices.length)) err(`${p}.pairs`, "vertex index out of range");
       grid(p, g.grid, g.intensity?.length ?? 0);
+      shapes(p, g.blendShapes as Array<{ param: string; forms: unknown[] }> | undefined, numberForm);
     }
     const groups = rig.drawOrderGroups ?? [];
     const inGroups = new Set<string>();
@@ -609,6 +523,14 @@ function validateLive2D(model: Model, err: Report, warn: Report): void {
     l.forms?.forEach((f, k) => {
       if (!Array.isArray(f.points) || f.points.length !== n || !f.points.every(num)) err(`${p}.forms[${k}].points`, `needs ${n} numbers (x, y per vertex)`);
     });
+    shapes(p, l.blendShapes, pointsOf(n));
+    if (l.paths) {
+      try {
+        checkPaths(l.paths, a.vertices.length);
+      } catch (e) {
+        err(`${p}.paths`, (e as Error).message);
+      }
+    }
     if (rig.drawOrderGroups?.length && !model.slots.some((s) => s.attachment === id && rig.drawOrderGroups!.some((g) => g.items.some((it) => "slot" in it && it.slot === s.id)))) {
       warn(p, "not in any draw-order group (drawn after the listed ones)");
     }

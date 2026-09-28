@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { applyOps, computePose, drawList, validateModel } from "../src/core/index.ts";
+import { applyOps, computePose, drawList, emptyModel, normalizeModel, serializeModel, validateModel } from "../src/core/index.ts";
 import type { Model } from "../src/core/index.ts";
 import type { RGBAImage } from "../src/render/png.ts";
 import { exportSpineData, extractRegion, importSpineData, packAtlas, parseAtlas, writeAtlas } from "../src/spine/index.ts";
@@ -77,6 +77,41 @@ test("spine export of an unedited import gives the original data back", () => {
   for (const k of ["bones", "slots", "skins", "events", "animations", "transform"]) near(src[k], out[k], k);
   assert.equal(out.ik[0].name, "reach");
   assert.equal(out.skeleton.spine, "4.2.43");
+});
+
+test("Spine bone colors import, edit, reset and survive model serialization", () => {
+  const source = skeleton();
+  source.bones[1].color = "336699ff";
+  const imported = importSpineData(source, { name: "t", resolveImage: imageOf }).model;
+  const id = source.bones[1].name;
+  assert.equal(imported.bones.find((b) => b.id === id)?.color, "#336699ff");
+  const changed = applyOps(imported, [{ op: "updateBone", id, color: "#e07030" }]).model;
+  assert.equal(normalizeModel(JSON.parse(serializeModel(changed))).bones.find((b) => b.id === id)?.color, "#e07030");
+  assert.equal(exportSpineData(changed, { name: "t", loadImage: imageOf }).json.bones.find((b: any) => b.name === id).color, "e07030ff");
+  const reset = applyOps(changed, [{ op: "updateBone", id, color: null }]).model;
+  assert.equal(reset.bones.find((b) => b.id === id)?.color, undefined);
+  assert.equal(exportSpineData(reset, { name: "t", loadImage: imageOf }).json.bones.find((b: any) => b.name === id).color, undefined);
+
+  const legacy = emptyModel("legacy");
+  legacy.meta = { spine: { bones: { root: { color: "112233ff" } } } };
+  const migrated = normalizeModel(legacy);
+  assert.equal(migrated.bones[0].color, "#112233ff");
+  const cleared = applyOps(migrated, [{ op: "updateBone", id: "root", color: null }]).model;
+  assert.equal(normalizeModel(JSON.parse(serializeModel(cleared))).bones[0].color, undefined);
+});
+
+test("Spine bone icons import, edit, clear and survive model serialization", () => {
+  const source = skeleton();
+  source.bones[1].icon = "ik";
+  const id = source.bones[1].name;
+  const imported = importSpineData(source, { name: "t", resolveImage: imageOf }).model;
+  assert.equal(imported.bones.find((b) => b.id === id)?.icon, "ik");
+  const changed = applyOps(imported, [{ op: "updateBone", id, icon: "circle" }]).model;
+  assert.equal(normalizeModel(JSON.parse(serializeModel(changed))).bones.find((b) => b.id === id)?.icon, "circle");
+  assert.equal(exportSpineData(changed, { name: "t", loadImage: imageOf }).json.bones.find((b: any) => b.name === id).icon, "circle");
+  const reset = applyOps(changed, [{ op: "updateBone", id, icon: null }]).model;
+  assert.equal(reset.bones.find((b) => b.id === id)?.icon, undefined);
+  assert.equal(exportSpineData(reset, { name: "t", loadImage: imageOf }).json.bones.find((b: any) => b.name === id).icon, undefined);
 });
 
 test("spine export of an edited model poses like the model (regenerated meshes, deforms, shear keys)", () => {

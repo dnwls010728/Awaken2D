@@ -14,8 +14,8 @@ function model(): Model {
     { op: "addBone", id: "b", parent: "a", start: [50, 50], end: [100, 50] },
     { op: "addImage", id: "img", path: "img.png" },
     { op: "addMesh", id: "m", shape: { rect: { x: 0, y: 0, width: 100, height: 100 }, cols: 4, rows: 4 }, image: "img", bones: ["a", "b"] },
-    { op: "addParameter", id: "P", min: 0, max: 1 },
-    { op: "setParamShape", parameter: "P", attachment: "m", keys: [{ at: 1, offsets: [[12, 5, 0], [24, 1, 1]] }] },
+    { op: "setAnimation", name: "a", duration: 1 },
+    { op: "setDeformKeys", animation: "a", attachment: "m", keys: [{ t: 1, offsets: [[12, 5, 0], [24, 1, 1]] }] },
   ]).model;
 }
 const area = (a: MeshAttachment) => a.triangles.reduce((s, [i, j, k]) => s + triArea(a.vertices[i], a.vertices[j], a.vertices[k]), 0);
@@ -58,15 +58,15 @@ test("addVertex splits the containing triangle (or both triangles on an edge) an
   assert.throws(() => applyOps(m, [{ op: "addVertex", attachment: "m", at: [150, 50] }]), /outside the mesh/);
 });
 
-test("removeVertices re-triangulates the hole and renumbers blend shapes", () => {
+test("removeVertices re-triangulates the hole and renumbers deform keys", () => {
   const m = model();
   const res = applyOps(m, [{ op: "removeVertices", attachment: "m", indices: [12] }]).model;
   const att = res.attachments.m;
   assert.equal(att.vertices.length, 24);
   valid(att);
   assert.ok(Math.abs(area(att) - 10000) < 1e-6, "interior removal keeps the covered area");
-  // shape offsets: vertex 12 dropped, vertex 24 is now 23
-  assert.deepEqual(res.parameters![0].meshes!.m[0].v, [[23, 1, 1]]);
+  // deform offsets: vertex 12 dropped, vertex 24 is now 23
+  assert.deepEqual(res.animations!.a.deform!.m[0].v, [[23, 1, 1]]);
   const corner = applyOps(m, [{ op: "removeVertices", attachment: "m", indices: [0, 4] }]).model.attachments.m;
   valid(corner);
   assert.equal(corner.vertices.length, 23);

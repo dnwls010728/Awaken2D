@@ -9,6 +9,8 @@ import type {
   DrawOrderGroup,
   Glue,
   KeyformGrid,
+  Live2DBlendShape,
+  Live2DBlendShapeConstraint,
   Live2DRig,
   MeshAttachment,
   MeshKeyform,
@@ -16,9 +18,13 @@ import type {
   Parameter,
   Part,
   RGB,
+  RotationDeformer,
+  RotationKeyform,
   Slot,
   Tri,
   Vec2,
+  WarpDeformer,
+  WarpKeyform,
 } from "../core/types.ts";
 import { live2dFrame, live2dVertices } from "../core/live2d.ts";
 import type { Moc3Data } from "./moc3.ts";
@@ -62,9 +68,6 @@ export function mocToModel(moc: Moc3Data, opts: { name: string; textures: string
     p.decimals = num("parameter.decimals")[i];
     return p;
   });
-  if (moc.version >= 4 && Array.from(num("parameter.type")).some((t) => t === 1)) {
-    warnings.push("blend-shape parameters are not supported yet: their shapes are left out");
-  }
 
   // keyform grids (shared per keyform binding)
   const keysOf = (pb: number): number[] => {
@@ -268,6 +271,125 @@ export function mocToModel(moc: Moc3Data, opts: { name: string; textures: string
     };
   });
 
+  // blend shapes (4.2+): per object, keyed differences on blend-shape parameters, stored after the regular keyforms
+  if (moc.version >= 4 && c.blendShapeParameterBindings) {
+    const bsParamOf: number[] = [];
+    for (let i = 0; i < paramIds.length; i++) {
+      if (num("parameter.type")[i] !== 1) continue;
+      const b = num("parameter.blendShapeBindingBegin")[i];
+      for (let k = 0; k < num("parameter.blendShapeBindingCount")[i]; k++) bsParamOf[b + k] = i;
+    }
+    const bsKeys = (pb: number) => {
+      const b = num("blendShapeParameterBinding.keysBegin")[pb];
+      return Array.from(num("keys")).slice(b, b + num("blendShapeParameterBinding.keysCount")[pb]).map(r6);
+    };
+    for (let pb = 0; pb < c.blendShapeParameterBindings; pb++) {
+      const p = parameters[bsParamOf[pb]];
+      if (p && !p.blendShape) p.blendShape = { keys: bsKeys(pb), base: num("blendShapeParameterBinding.baseKey")[pb] };
+    }
+    const constraintsOf = (kb: number): Live2DBlendShapeConstraint[] => {
+      const out: Live2DBlendShapeConstraint[] = [];
+      const b = num("blendShapeKeyformBinding.constraintBegin")[kb];
+      for (let k = 0; k < num("blendShapeKeyformBinding.constraintCount")[kb]; k++) {
+        const ci = num("blendShapeConstraintIndices")[b + k];
+        const vb = num("blendShapeConstraint.valueBegin")[ci];
+        out.push({
+          param: paramIds[num("blendShapeConstraint.parameter")[ci]],
+          values: Array.from({ length: num("blendShapeConstraint.valueCount")[ci] }, (_, j): [number, number] => [r6(num("blendShapeConstraintValue.key")[vb + j]), r6(num("blendShapeConstraintValue.weight")[vb + j])]),
+        });
+      }
+      return out;
+    };
+    /** Color differences of a blend-shape keyform (kept unless zero). */
+    const colorDelta = (kind: "warp" | "rotation" | "artMesh", obj: number, k: number, formIndex: number): { multiply?: RGB; screen?: RGB } => {
+      const pre = kind === "artMesh" ? "artMeshKeyform" : `${kind}Keyform`;
+      const mi = moc.version >= 5 ? num(`${pre}.multiplyBegin`)[k] : num(`${kind}.colorBegin`)[obj] + formIndex;
+      const si = moc.version >= 5 ? num(`${pre}.screenBegin`)[k] : num(`${kind}.colorBegin`)[obj] + formIndex;
+      const out: { multiply?: RGB; screen?: RGB } = {};
+      if (mi >= 0 && mi < c.keyformMultiplyColors) {
+        const m = colorAt("multiplyColor", mi);
+        if (!isZero(m)) out.multiply = m;
+      }
+      if (si >= 0 && si < c.keyformScreenColors) {
+        const s = colorAt("screenColor", si);
+        if (!isZero(s)) out.screen = s;
+      }
+      return out;
+    };
+    /** The blend shapes of one object: `make(keyform index, form index among the object's keyforms)` reads a form. */
+    const shapesOf = <F>(prefix: string, i: number, make: (k: number, formIndex: number) => F): Live2DBlendShape<F>[] => {
+      const out: Live2DBlendShape<F>[] = [];
+      const b = num(`${prefix}.bindingBegin`)[i];
+      for (let j = 0; j < num(`${prefix}.bindingCount`)[i]; j++) {
+        const kb = b + j;
+        const pb = num("blendShapeKeyformBinding.parameterBinding")[kb];
+        const fb = num("blendShapeKeyformBinding.keyformBegin")[kb];
+        const cons = constraintsOf(kb);
+        out.push({
+          param: paramIds[bsParamOf[pb]],
+          forms: Array.from({ length: num("blendShapeKeyformBinding.keyformCount")[kb] }, (_, k) => make(fb + k, fb + k)),
+          ...(cons.length ? { constraints: cons } : {}),
+        });
+      }
+      return out;
+    };
+    const specificOf = (type: number) => new Map(Array.from(num("deformer.type")).flatMap((t, d) => (t === type ? [[num("deformer.specific")[d], d] as [number, number]] : [])));
+    const warpDef = specificOf(0);
+    const rotDef = specificOf(1);
+    for (let i = 0; i < c.blendShapesArtMeshes; i++) {
+      const t = num("blendShapeArtMesh.target")[i];
+      const vc = num("artMesh.vertexCount")[t];
+      const first = num("artMesh.keyformBegin")[t];
+      (attachments[meshIds[t]].live2d!.blendShapes ??= []).push(
+        ...shapesOf<MeshKeyform>("blendShapeArtMesh", i, (k) => {
+          const op = r6(num("artMeshKeyform.opacity")[k]);
+          const dro = r6(num("artMeshKeyform.drawOrder")[k]);
+          return { points: pts(num("artMeshKeyform.positionBegin")[k], vc), ...(op ? { opacity: op } : {}), ...(dro ? { drawOrder: dro } : {}), ...colorDelta("artMesh", t, k, k - first) };
+        }),
+      );
+    }
+    for (let i = 0; i < c.blendShapesWarpDeformers; i++) {
+      const t = num("blendShapeWarp.target")[i];
+      const d = deformers[warpDef.get(t)!] as WarpDeformer;
+      const vc = num("warp.vertexCount")[t];
+      const first = num("warp.keyformBegin")[t];
+      (d.blendShapes ??= []).push(
+        ...shapesOf<WarpKeyform>("blendShapeWarp", i, (k) => {
+          const op = r6(num("warpKeyform.opacity")[k]);
+          return { points: pts(num("warpKeyform.positionBegin")[k], vc), ...(op ? { opacity: op } : {}), ...colorDelta("warp", t, k, k - first) };
+        }),
+      );
+    }
+    if (moc.version >= 5) {
+      for (let i = 0; i < c.blendShapesRotationDeformers; i++) {
+        const t = num("blendShapeRotation.target")[i];
+        const d = deformers[rotDef.get(t)!] as RotationDeformer;
+        const first = num("rotation.keyformBegin")[t];
+        (d.blendShapes ??= []).push(
+          ...shapesOf<RotationKeyform>("blendShapeRotation", i, (k) => {
+            const op = r6(num("rotationKeyform.opacity")[k]);
+            return {
+              x: r6(num("rotationKeyform.x")[k]),
+              y: r6(num("rotationKeyform.y")[k]),
+              angle: r6(num("rotationKeyform.angle")[k]),
+              scale: r6(num("rotationKeyform.scale")[k]),
+              ...(op ? { opacity: op } : {}),
+              ...colorDelta("rotation", t, k, k - first),
+            };
+          }),
+        );
+      }
+      for (let i = 0; i < c.blendShapesParts; i++) {
+        const t = num("blendShapePart.target")[i];
+        (parts[t].blendShapes ??= []).push(...shapesOf<number>("blendShapePart", i, (k) => r6(num("partKeyform.drawOrder")[k])));
+      }
+      for (let i = 0; i < c.blendShapesGlue; i++) {
+        const t = num("blendShapeGlue.target")[i];
+        (glue[t].blendShapes ??= []).push(...shapesOf<number>("blendShapeGlue", i, (k) => r6(num("glueKeyform.intensity")[k])));
+      }
+    }
+  }
+
   // draw-order groups
   const drawOrderGroups: DrawOrderGroup[] = Array.from({ length: c.drawOrderGroups }, (_, g) => {
     const b = num("drawOrderGroup.objectBegin")[g];
@@ -360,6 +482,11 @@ export interface Live2DMeta {
   meshOrder?: string[];
   /** Texture image ids by texture number. */
   textures?: string[];
+  /**
+   * Order of the Cubism Editor's parts palette (from a .cmo3), depth first: "p:<part>", "d:<deformer>", "m:<art mesh>",
+   * "g:<glue>". The editor lists parts and deformers in this order; objects not in it follow.
+   */
+  treeOrder?: string[];
   groups?: Json;
   hitAreas?: Json;
   layout?: Json;
@@ -407,6 +534,12 @@ export function applyLive2DJson(res: Live2DImportResult, files: Live2DJsonFiles)
       if (!t) continue;
       if (p.Name) t.name = p.Name;
       if (p.GroupId) t.group = p.GroupId;
+    }
+    // linked pairs ([["ParamAngleX", "ParamAngleY"], ...]): the first is linked with the next one
+    for (const c of cdi.CombinedParameters ?? []) {
+      const ids: unknown[] = Array.isArray(c) ? c : (c?.Ids ?? []);
+      const t = typeof ids[0] === "string" ? params.get(ids[0]) : undefined;
+      if (t && ids.length === 2) t.combined = true;
     }
     const parts = new Map(model.live2d!.parts.map((p) => [p.id, p]));
     for (const p of cdi.Parts ?? []) {

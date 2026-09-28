@@ -157,3 +157,33 @@ test("Spine export writes skins, inherit modes and constraints (4.3 array) that 
   const saved = normalizeModel(JSON.parse(serializeModel(m)));
   for (const k of ["transforms", "spinePhysics", "constraintOrder", "skins", "skin", "bones"] as const) assert.deepEqual(saved[k], m[k], `${k} survives save / load`);
 });
+
+test("renameConstraint / renameEvent follow the name into the order, skins and animations; folder names use '/'", () => {
+  let m = applyOps(base(), [
+    { op: "setConstraint", kind: "transform", constraint: { id: "t", source: "a", bones: ["b"], properties: [{ from: "x", to: [{ property: "x" }] }], mix: { x: 0.5 } } },
+    { op: "addIk", id: "reach", bones: ["c"], target: "a" },
+    { op: "setConstraintOrder", order: ["transform:t", "ik:reach"] },
+    { op: "updateConstraint", kind: "transform", id: "t", set: { skin: true } },
+    { op: "addSkin", name: "s" },
+    { op: "setSkinBones", skin: "s", constraints: ["transform:t"] },
+    { op: "setConstraintKeys", animation: "turn", kind: "transform", constraint: "t", channel: "x", keys: [{ t: 0, v: 1 }] },
+    { op: "setIkKeys", animation: "turn", ik: "reach", channel: "mix", keys: [{ t: 0, v: 1 }] },
+    { op: "setEvent", name: "hit" },
+    { op: "setEventKeys", animation: "turn", keys: [{ t: 0.5, name: "hit" }] },
+  ] as Op[]).model;
+  m = applyOps(m, [
+    { op: "renameConstraint", kind: "transform", id: "t", to: "arms/follow" },
+    { op: "renameConstraint", kind: "ik", id: "reach", to: "arms/reach" },
+    { op: "renameEvent", name: "hit", to: "sfx/hit" },
+  ] as Op[]).model;
+  assert.deepEqual(m.constraintOrder, ["transform:arms/follow", "ik:arms/reach"]);
+  assert.deepEqual(m.skins!.s.constraints, ["transform:arms/follow"]);
+  const a = m.animations!.turn;
+  assert.deepEqual(Object.keys(a.transforms!), ["arms/follow"]);
+  assert.deepEqual(Object.keys(a.ik!), ["arms/reach"]);
+  assert.deepEqual(Object.keys(m.events!), ["sfx/hit"]);
+  assert.equal(a.events![0].name, "sfx/hit");
+  assert.throws(() => applyOps(m, [{ op: "renameConstraint", kind: "transform", id: "arms/follow", to: "arms/reach" }] as Op[]), /already exists/);
+  assert.throws(() => applyOps(m, [{ op: "renameEvent", name: "nope", to: "x" }] as Op[]), /unknown event/);
+  assert.deepEqual(validateModel(m, { poseSamples: 0 }).filter((i) => i.level === "error"), []);
+});

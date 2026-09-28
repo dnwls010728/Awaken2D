@@ -23,6 +23,10 @@ export interface Bone {
   shearY?: number;
   /** Visual/weighting length along the bone's local +x axis. */
   length: number;
+  /** Spine editor bone color; affects guides, not rendered attachments. */
+  color?: string;
+  /** Spine editor bone icon; a visual aid in the tree and viewport. */
+  icon?: string;
   /** Which parent transforms the bone inherits (Spine). Default "normal" (all of them). */
   inherit?: Inherit;
   /** Spine: the bone only exists while the active skin lists it (see Skin.bones). */
@@ -124,15 +128,54 @@ export interface MeshKeyform extends Live2DColors {
   drawOrder?: number;
 }
 
+/** A weight limit of a blend shape: its weight is multiplied by this piecewise-linear function of another parameter. */
+export interface Live2DBlendShapeConstraint {
+  param: string;
+  /** [parameter value, weight] points, by value (clamped outside). */
+  values: Array<[number, number]>;
+}
+
+/**
+ * Live2D blend shape (Cubism 4.2+): the object adds a difference keyed on a blend-shape parameter, one form per
+ * key of that parameter (the base key's form is zero), interpolated between keys and scaled by the constraints.
+ * Form fields are differences: points / opacity / draw order / colors / angle... are added.
+ */
+export interface Live2DBlendShape<F> {
+  param: string;
+  forms: F[];
+  constraints?: Live2DBlendShapeConstraint[];
+}
+
+/**
+ * Deformation path on a Live2D art mesh (Cubism's path tool; editing aid, not exported): a curve through control
+ * points pinned inside mesh triangles (vertex indices, barycentric weights) so it follows every keyform, and the
+ * vertices bound to it, which follow the curve when a control point is dragged.
+ */
+export interface Live2DPath {
+  points: Array<{ tri: [number, number, number]; w: [number, number, number]; corner?: boolean }>;
+  closed?: boolean;
+  /** Bound vertices: position along the curve (control point index + fraction) and influence 0..1. */
+  bind: Array<{ vertex: number; t: number; weight: number }>;
+  /** Brush width in pixels (what vertices it binds when drawn). */
+  width?: number;
+}
+
 export interface Live2DMesh {
   deformer: string | null;
   part: string | null;
   grid: KeyformGrid;
   forms: MeshKeyform[];
+  blendShapes?: Live2DBlendShape<MeshKeyform>[];
   /** Hidden in the Cubism editor (visible flag off). */
   hidden?: boolean;
   /** Disabled: never drawn. */
   disabled?: boolean;
+  /** Locked in the editor: not picked in the viewport (editor state, not exported). */
+  locked?: boolean;
+  /** Display name in the Cubism editor (from a .cmo3; editor state, not exported). */
+  name?: string;
+  /** Deformation paths (editor state, not exported). */
+  paths?: Live2DPath[];
 }
 
 export interface WarpKeyform extends Live2DColors {
@@ -161,6 +204,10 @@ interface DeformerBase {
   grid: KeyformGrid;
   hidden?: boolean;
   disabled?: boolean;
+  /** Locked in the editor (editor state, not exported). */
+  locked?: boolean;
+  /** Display name in the Cubism editor (from a .cmo3; editor state, not exported). */
+  name?: string;
 }
 
 /** Live2D warp deformer: children's points are in its 0..1 square, mapped through the keyed lattice. */
@@ -171,6 +218,7 @@ export interface WarpDeformer extends DeformerBase {
   /** Bilinear interpolation inside cells (Cubism 3.3+ "new" warp); otherwise two triangles per cell. */
   bilinear?: boolean;
   forms: WarpKeyform[];
+  blendShapes?: Live2DBlendShape<WarpKeyform>[];
 }
 
 /** Live2D rotation deformer: children's points are in its local frame (rotated, scaled, placed at its origin). */
@@ -178,6 +226,7 @@ export interface RotationDeformer extends DeformerBase {
   type: "rotation";
   baseAngle: number;
   forms: RotationKeyform[];
+  blendShapes?: Live2DBlendShape<RotationKeyform>[];
 }
 
 export type Deformer = WarpDeformer | RotationDeformer;
@@ -190,9 +239,15 @@ export interface Part {
   /** Opacity 1 at rest (default true); false = 0. */
   visible?: boolean;
   disabled?: boolean;
+  /** Locked in the editor: nothing in it is picked in the viewport (editor state, not exported). */
+  locked?: boolean;
+  /** Label color in the editor's parts list, "#rrggbb" (editor state, not exported). */
+  label?: string;
   grid: KeyformGrid;
   /** Draw order per form. */
   drawOrders: number[];
+  /** Blend shapes on the draw order (one difference per key). */
+  blendShapes?: Live2DBlendShape<number>[];
 }
 
 /** Live2D glue: pulls vertex pairs of two meshes together (by keyed intensity). */
@@ -200,6 +255,8 @@ export interface Glue {
   id: string;
   a: string;
   b: string;
+  /** Part it is listed under in the editor's parts tree (from a .cmo3; editor state, not exported). */
+  part?: string | null;
   /** [vertexInA, vertexInB] pairs, flat. */
   pairs: number[];
   /** [weightA, weightB] per pair, flat. */
@@ -207,6 +264,8 @@ export interface Glue {
   grid: KeyformGrid;
   /** Intensity per form. */
   intensity: number[];
+  /** Blend shapes on the intensity (one difference per key). */
+  blendShapes?: Live2DBlendShape<number>[];
 }
 
 /** A draw-order group: its items sort by their current draw order (clamped to min..max), ties keep list order. */
@@ -326,25 +385,10 @@ export interface IkTimeline {
   bendPositive?: Key<boolean>[];
 }
 
-export interface PhysicsTimeline {
-  mix?: Key<number>[];
-  /** Extra force (e.g. wind), world units/s^2, added to gravity. */
-  force?: Key<Vec2>[];
-}
-
-/** A key on a parameter axis: the value `v` applies when the parameter equals `at`. Linear in between. */
-export interface ParamKey<T> {
-  at: number;
-  v: T;
-}
-
 /** Sparse vertex offsets: [vertexIndex, dx, dy] (world units, setup space). */
 export type VertexOffsets = Array<[number, number, number]>;
 
-/**
- * A named knob (Live2D-style parameter). Everything it drives is listed here, keyed by parameter value.
- * Effects of several parameters add up.
- */
+/** A Live2D parameter: a named knob that keyforms (art meshes, deformers, parts, glue) are keyed on. */
 export interface Parameter {
   id: string;
   min: number;
@@ -358,52 +402,16 @@ export interface Parameter {
   repeat?: boolean;
   /** Live2D: decimal places shown (and the key snap tolerance). */
   decimals?: number;
-  /** Bone offsets: rotate/translate add to the pose, scale multiplies. */
-  bones?: Record<string, { rotate?: ParamKey<number>[]; translate?: ParamKey<Vec2>[]; scale?: ParamKey<Vec2>[] }>;
-  /** Slot tint (multiplied) and attachment switching (the last key with at <= value wins). */
-  slots?: Record<string, { color?: ParamKey<string>[]; attachment?: ParamKey<string | null>[] }>;
-  /** Blend shapes: per-attachment vertex offsets. */
-  meshes?: Record<string, ParamKey<VertexOffsets>[]>;
-  /** Warp lattice control-point offsets, one [dx, dy] per control point (see Warp). */
-  warps?: Record<string, ParamKey<Vec2[]>[]>;
-}
-
-/**
- * Warp deformer: a lattice over a setup-space rectangle. Moving its control points (via parameters) bends every
- * target mesh inside it before skinning. Control points are (cols+1)*(rows+1), row-major from the bottom row
- * (y = rect.y) upward, left to right. Warps apply in array order.
- */
-/**
- * Combination keyforms (Live2D's multi-parameter keys): a grid over 2-3 parameters with a keyform at chosen
- * grid points. The grid on each axis is the keyed values plus the parameter's default; grid points without a key
- * contribute nothing. Values in between blend multilinearly, and the result adds to what each parameter does on
- * its own - so keys at the corners (e.g. AngleX = 30 and AngleY = 30 together) correct the combined pose while
- * leaving each parameter alone unchanged.
- */
-export interface Combo {
-  id: string;
-  params: string[];
-  keys: ComboKey[];
-}
-
-export interface ComboKey {
-  /** One value per parameter, in `params` order. */
-  at: number[];
-  /** Added rotation (degrees) / translation; scale multiplies (blended as 1 + weight * (s - 1)). */
-  bones?: Record<string, { rotate?: number; translate?: Vec2; scale?: Vec2 }>;
-  /** Sparse vertex offsets per attachment (setup space). */
-  meshes?: Record<string, VertexOffsets>;
-  /** Control-point offsets per warp (row-major from the bottom row). */
-  warps?: Record<string, Vec2[]>;
-}
-
-export interface Warp {
-  id: string;
-  rect: { x: number; y: number; width: number; height: number };
-  cols: number;
-  rows: number;
-  /** Attachment ids deformed by this warp. */
-  targets: string[];
+  /**
+   * Live2D: linked with the next parameter in the list, shown as one 2D control (Cubism's chain link; cdi3
+   * CombinedParameters). Editor display only.
+   */
+  combined?: boolean;
+  /**
+   * Live2D blend-shape parameter (Cubism 4.2+): objects bound to it add keyed differences on top of their keyforms
+   * (see Live2DBlendShape). `keys` are its key values, `base` the index of the key where it adds nothing.
+   */
+  blendShape?: { keys: number[]; base: number };
 }
 
 export interface Animation {
@@ -414,7 +422,6 @@ export interface Animation {
   bones?: Record<string, BoneTimeline>;
   slots?: Record<string, SlotTimeline>;
   ik?: Record<string, IkTimeline>;
-  physics?: Record<string, PhysicsTimeline>;
   /**
    * Draw-order changes over time (stepped, like Spine): each key moves slots by [slotId, offset] positions from
    * their setup draw order (positive = toward the front); slots not listed keep their relative order.
@@ -479,28 +486,6 @@ export interface DrawOrderKey {
 }
 
 /**
- * Spring ("jiggle") bones: each listed bone's tip is a damped point mass pulled toward the animated pose.
- * Simulated after IK with a fixed time step, deterministically from the start of the animation.
- */
-export interface PhysicsConstraint {
-  id: string;
-  /** Bones simulated with these settings (each independently, parents first). Need length > 0. */
-  bones: string[];
-  /** Spring frequency in Hz: higher = stiffer, snappier return to the animated pose. */
-  frequency: number;
-  /** Damping ratio: 0 = wobbles forever, 1 = no overshoot. */
-  damping: number;
-  /** World units / s^2, e.g. [0, -800] to hang down. */
-  gravity: Vec2;
-  /** 1 = tip lags fully behind parent motion, 0 = carried along rigidly. */
-  inertia: number;
-  /** 0 = animated pose, 1 = full simulation. */
-  mix: number;
-  /** Max deviation from the animated angle, degrees (0 = unlimited). */
-  limit: number;
-}
-
-/**
  * Rotates a chain of 1 or 2 bones so the chain tip reaches the target bone's world position.
  * Applied in array order after animation, before skinning.
  */
@@ -527,10 +512,10 @@ export interface IkConstraint {
 }
 
 /**
- * What a model is made for. "spine": bones, weights, IK, spring bones and bone / slot / deform / draw-order
- * timelines (exports to Spine). "live2d": parameters and the Live2D rig (keyforms, deformers, parts, physics3,
- * pose), animated by parameter and part-opacity tracks (exports to Live2D). Ops for the other kind are refused.
- * Absent on older files: everything is allowed.
+ * What a model is made for. "spine": bones, weights, constraints (IK, transform, path, physics, sliders), skins and
+ * bone / slot / deform / draw-order timelines (exports to Spine). "live2d": parameters and the Live2D rig (keyforms,
+ * deformers, parts, physics3, pose), animated by parameter and part-opacity tracks (exports to Live2D). Ops for the
+ * other kind are refused. Files saved without one load as Live2D when they have a Live2D rig, else as Spine.
  */
 export type ModelTarget = "spine" | "live2d";
 export const MODEL_TARGETS: ModelTarget[] = ["spine", "live2d"];
@@ -538,7 +523,7 @@ export const MODEL_TARGETS: ModelTarget[] = ["spine", "live2d"];
 export interface Model {
   format: string;
   name: string;
-  target?: ModelTarget;
+  target: ModelTarget;
   meta?: Record<string, unknown>;
   images?: Record<string, ImageRef>;
   /** Bones; order is free, parents are resolved by id. */
@@ -553,7 +538,7 @@ export interface Model {
   transforms?: TransformConstraint[];
   /** Spine path constraints: bones follow a path attachment. */
   paths?: PathConstraint[];
-  /** Spine physics constraints (Spine 4.2+ physics; `physics` holds Awaken2D's own spring bones). */
+  /** Spine physics constraints (Spine 4.2+ physics). */
   spinePhysics?: SpinePhysics[];
   /** Spine 4.3 sliders: an animation posed at a time set by a value or a bone. */
   sliders?: Slider[];
@@ -575,14 +560,8 @@ export interface Model {
   clippings?: Record<string, ClippingAttachment>;
   /** Spine bounding box attachments (hit-test polygons for games; never drawn), by id. */
   boundingBoxes?: Record<string, BoundingBoxAttachment>;
-  /** Spring bones, simulated after IK. */
-  physics?: PhysicsConstraint[];
-  /** Live2D-style parameters. */
+  /** Live2D parameters. */
   parameters?: Parameter[];
-  /** Warp deformers driven by parameters. */
-  warps?: Warp[];
-  /** Keyforms over combinations of parameters (see Combo). */
-  combos?: Combo[];
   /** Event definitions (see EventKey). */
   events?: Record<string, EventDef>;
   /** Live2D rig: deformers, parts, glue and draw-order groups (art meshes are attachments with `live2d`). */
@@ -592,7 +571,6 @@ export interface Model {
 export type BoneChannel = keyof BoneTimeline;
 export type SlotChannel = keyof SlotTimeline;
 export type IkChannel = keyof IkTimeline;
-export type PhysicsChannel = keyof PhysicsTimeline;
 
 /** How a constraint's stretch / squash changes the bone's scaleY (Spine). */
 export type ScaleYMode = "uniform" | "volume";
@@ -701,7 +679,7 @@ export interface BoundingBoxAttachment {
   color?: string;
 }
 
-/** Spine 4.2+ physics constraint on one bone (distinct from Awaken2D's spring bones in `physics`). */
+/** Spine 4.2+ physics constraint on one bone. */
 export interface SpinePhysics {
   id: string;
   bone: string;

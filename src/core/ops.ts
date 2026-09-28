@@ -7,9 +7,8 @@ import { boneEnds, computePose } from "./pose.ts";
 import type { Pose } from "./pose.ts";
 import { isChannelEases, isEase } from "./animation.ts";
 import { wrapDeg } from "./ik.ts";
-import { PHYSICS_DEFAULTS } from "./model.ts";
-import { WARP_PRESETS, findParameter, toSparse, transformOffsets, warpGrid, warpPresetOffsets } from "./params.ts";
-import type { ShapeTransform, WarpPreset } from "./params.ts";
+import { findParameter, toSparse, transformOffsets } from "./params.ts";
+import type { ShapeTransform } from "./params.ts";
 import { addVertex, adjustWeights, moveVertices, removeVertices, retriangulate, transferToPoints, weightMask } from "./meshedit.ts";
 import type { WeightMode } from "./meshedit.ts";
 import {
@@ -23,6 +22,7 @@ import {
   renameLive2DSlot,
   toLive2DMesh,
 } from "./live2dops.ts";
+import { remapPaths } from "./live2dpath.ts";
 import { DEFAULT_LIVE2D_CANVAS } from "./model.ts";
 import type { Live2DOp } from "./live2dops.ts";
 import { BLEND_MODES, INHERITS, MODEL_TARGETS, SPINE_PHYSICS_SETTINGS, TRANSFORM_PROPERTIES } from "./types.ts";
@@ -32,8 +32,6 @@ import type {
   BlendMode,
   Bone,
   BoneChannel,
-  Combo,
-  ComboKey,
   DeformKey,
   DrawOrderKey,
   EventDef,
@@ -44,18 +42,12 @@ import type {
   MeshAttachment,
   Model,
   ModelTarget,
-  ParamKey,
   Parameter,
-  PhysicsChannel,
-  PhysicsConstraint,
   SlotChannel,
   Tri,
   Vec2,
   VertexOffsets,
-  Warp,
 } from "./types.ts";
-
-type PhysicsSettings = Partial<Omit<PhysicsConstraint, "id" | "bones">>;
 
 export type Shape =
   | { rect: { x: number; y: number; width: number; height: number }; cols?: number; rows?: number }
@@ -76,6 +68,8 @@ export type Op =
       scaleY?: number;
       shearX?: number;
       shearY?: number;
+      color?: string;
+      icon?: string;
       /** World-space setup position of the bone origin. */
       start?: Vec2;
       /** World-space setup position of the bone tip; sets rotation and length. */
@@ -95,6 +89,13 @@ export type Op =
       length?: number;
       scaleX?: number;
       scaleY?: number;
+      /** Spine shear, degrees (0 clears). */
+      shearX?: number;
+      shearY?: number;
+      /** Set an editor color, or clear it to use the default palette. */
+      color?: string | null;
+      /** Set a Spine editor icon, or clear it for the default bone icon. */
+      icon?: string | null;
       start?: Vec2;
       end?: Vec2;
       /**
@@ -102,6 +103,8 @@ export type Op =
        * were attached. Default false: only the bone moves and the art stays put (re-binding).
        */
       carry?: boolean;
+      /** Spine's bone compensation: the child bones keep their world transform (only this bone moves). */
+      compensate?: boolean;
     }
   | { op: "removeBone"; id: string }
   | { op: "renameBone"; id: string; to: string }
@@ -150,7 +153,7 @@ export type Op =
        */
       space?: "local" | "world";
     }
-  | { op: "clearKeys"; animation: string; bone?: string; slot?: string; ik?: string; physics?: string; param?: string; channel?: string }
+  | { op: "clearKeys"; animation: string; bone?: string; slot?: string; ik?: string; param?: string; channel?: string }
   | {
       op: "addBoneChain";
       /** Bones are named <id>_1 .. <id>_<count>, each the child of the previous one. */
@@ -161,10 +164,6 @@ export type Op =
       end: Vec2;
       count: number;
     }
-  | ({ op: "addPhysics"; id: string; bones: string[] } & PhysicsSettings)
-  | ({ op: "updatePhysics"; id: string; bones?: string[] } & PhysicsSettings)
-  | { op: "removePhysics"; id: string }
-  | { op: "setPhysicsKeys"; animation: string; physics: string; channel: PhysicsChannel; keys: Key<number | Vec2>[]; mode?: "replace" | "merge" }
   | { op: "addParameter"; id: string; min: number; max: number; default?: number; name?: string | null; group?: string | null; decimals?: number; repeat?: boolean }
   | {
       op: "updateParameter";
@@ -178,63 +177,20 @@ export type Op =
       /** Live2D: decimal places (key snap tolerance) and wrap-around. */
       decimals?: number;
       repeat?: boolean;
+      /** Live2D: linked with the next parameter (one 2D control in the editor; cdi3 CombinedParameters). */
+      combined?: boolean;
     }
   | { op: "renameParameter"; id: string; to: string }
   | { op: "removeParameter"; id: string }
-  | { op: "setParamBoneKeys"; parameter: string; bone: string; channel: BoneChannel; keys: ParamKey<number | Vec2>[]; mode?: "replace" | "merge" }
-  | { op: "setParamSlotKeys"; parameter: string; slot: string; channel: SlotChannel; keys: ParamKey<string | null>[]; mode?: "replace" | "merge" }
-  | {
-      op: "setParamShape";
-      parameter: string;
-      attachment: string;
-      /** Each key: explicit sparse offsets and/or a transform of the mesh's setup vertices (summed). */
-      keys: Array<{ at: number; offsets?: VertexOffsets; transform?: ShapeTransform }>;
-      mode?: "replace" | "merge";
-    }
-  | { op: "addWarp"; id: string; targets: string[]; rect?: { x: number; y: number; width: number; height: number }; cols?: number; rows?: number; padding?: number }
-  | { op: "updateWarp"; id: string; targets?: string[] }
-  | { op: "removeWarp"; id: string }
-  | {
-      op: "setParamWarp";
-      parameter: string;
-      warp: string;
-      /** Each key: presets, explicit control-point offsets and/or a transform of the control points (summed). */
-      keys: Array<{
-        at: number;
-        preset?: WarpPreset;
-        amount?: number;
-        presets?: Array<{ preset: WarpPreset; amount: number }>;
-        offsets?: Vec2[];
-        transform?: ShapeTransform;
-      }>;
-      mode?: "replace" | "merge";
-    }
-  | { op: "clearParamKeys"; parameter: string; bone?: string; slot?: string; attachment?: string; warp?: string }
   | {
       op: "setMeshGeometry";
       attachment: string;
       vertices: Vec2[];
       triangles: Tri[];
       uvs?: Vec2[];
-      /** Default: carried over from the old mesh (barycentric), like blend shapes and combo shapes. */
+      /** Default: carried over from the old mesh (barycentric), like deform keys. */
       weights?: Array<Array<[string, number]>>;
     }
-  | { op: "addCombo"; id: string; params: string[] }
-  | { op: "removeCombo"; id: string }
-  | {
-      op: "setComboKey";
-      combo: string;
-      /** One value per combo parameter. */
-      at: number[];
-      bones?: Record<string, { rotate?: number; translate?: Vec2; scale?: Vec2 }>;
-      /** Per attachment: sparse offsets and/or a transform of its setup vertices (summed), as in setParamShape. */
-      meshes?: Record<string, MeshKeySpec>;
-      /** Per warp: presets, offsets and/or a transform of its control points (summed), as in setParamWarp. */
-      warps?: Record<string, WarpKeySpec>;
-      /** merge (default): replaces only the targets given in an existing key; replace: the whole key. */
-      mode?: "replace" | "merge";
-    }
-  | { op: "removeComboKey"; combo: string; at: number[] }
   | { op: "setParamTrack"; animation: string; parameter: string; keys: Key<number>[]; mode?: "replace" | "merge" }
   | {
       op: "moveVertices";
@@ -323,6 +279,8 @@ export type Op =
   | { op: "addSkin"; name: string; copyOf?: string }
   | { op: "removeSkin"; name: string }
   | { op: "renameSkin"; name: string; to: string }
+  | { op: "renameConstraint"; kind: "ik" | SpineConstraintKind; id: string; to: string }
+  | { op: "renameEvent"; name: string; to: string }
   /** In a skin, which attachment a slot shows for a placeholder (attachment null removes the entry). */
   | { op: "setSkinAttachment"; skin: string; slot: string; placeholder: string; attachment: string | null }
   /** The skin-only bones and constraints ("<kind>:<id>") a skin turns on. */
@@ -339,24 +297,15 @@ export type Op =
 export const OP_NAMES: Op["op"][] = [
   "addBone", "updateBone", "removeBone", "renameBone", "renameSlot", "addSlot", "updateSlot", "removeSlot", "moveSlot", "addImage",
   "addMesh", "autoWeight", "setWeights", "removeAttachment", "setAnimation", "removeAnimation",
-  "renameAnimation", "setKeys", "clearKeys", "setSlotKeys", "setDrawOrderKeys", "setDeformKeys", "setEvent", "setEventKeys", "setMeta", "setMeshGeometry", "addCombo", "removeCombo", "setComboKey", "removeComboKey", "addIk", "updateIk", "removeIk", "moveIk",
-  "setIkKeys", "addBoneChain", "addPhysics", "updatePhysics", "removePhysics", "setPhysicsKeys", "addParameter",
-  "updateParameter", "renameParameter", "removeParameter", "setParamBoneKeys", "setParamSlotKeys", "setParamShape", "addWarp", "updateWarp",
-  "removeWarp", "setParamWarp", "clearParamKeys", "setParamTrack", "moveVertices", "addVertex", "removeVertices",
+  "renameAnimation", "setKeys", "clearKeys", "setSlotKeys", "setDrawOrderKeys", "setDeformKeys", "setEvent", "renameEvent", "setEventKeys", "setMeta", "setMeshGeometry", "addIk", "updateIk", "removeIk", "moveIk",
+  "setIkKeys", "addBoneChain", "addParameter", "updateParameter", "renameParameter", "removeParameter", "setParamTrack", "moveVertices", "addVertex", "removeVertices",
   "retriangulate", "adjustWeights", "setTarget",
   "setConstraint", "updateConstraint", "removeConstraint", "setConstraintOrder", "setConstraintKeys",
-  "setSkin", "addSkin", "removeSkin", "renameSkin", "setSkinAttachment", "setSkinBones", "updateClipping", "updateBoundingBox", ...LIVE2D_OP_NAMES,
+  "setSkin", "addSkin", "removeSkin", "renameSkin", "renameConstraint", "setSkinAttachment", "setSkinBones", "updateClipping", "updateBoundingBox", ...LIVE2D_OP_NAMES,
 ];
 
 export interface MeshKeySpec {
   offsets?: VertexOffsets;
-  transform?: ShapeTransform;
-}
-export interface WarpKeySpec {
-  preset?: WarpPreset;
-  amount?: number;
-  presets?: Array<{ preset: WarpPreset; amount: number }>;
-  offsets?: Vec2[];
   transform?: ShapeTransform;
 }
 
@@ -372,12 +321,11 @@ export interface ApplyResult {
  */
 const MESH_SAFE_OPS = new Set([
   "addBone", "removeBone", "renameSlot", "addSlot", "updateSlot", "removeSlot", "moveSlot", "addImage",
-  "setAnimation", "removeAnimation", "renameAnimation", "setKeys", "clearKeys", "setSlotKeys", "setDrawOrderKeys", "setDeformKeys", "setEvent", "setEventKeys", "addIk",
-  "updateIk", "removeIk", "moveIk", "setIkKeys", "addPhysics", "updatePhysics", "removePhysics", "setPhysicsKeys",
-  "addParameter", "updateParameter", "removeParameter", "setParamBoneKeys", "setParamSlotKeys", "clearParamKeys",
-  "setParamTrack", "addCombo", "removeCombo", "setComboKey", "removeComboKey",
+  "setAnimation", "removeAnimation", "renameAnimation", "setKeys", "clearKeys", "setSlotKeys", "setDrawOrderKeys", "setDeformKeys", "setEvent", "renameEvent", "setEventKeys", "addIk",
+  "updateIk", "removeIk", "moveIk", "setIkKeys",
+  "addParameter", "updateParameter", "removeParameter", "setParamTrack",
   "setConstraint", "updateConstraint", "removeConstraint", "setConstraintOrder", "setConstraintKeys",
-  "setSkin", "addSkin", "removeSkin", "renameSkin", "setSkinAttachment", "setSkinBones", "updateClipping", "updateBoundingBox",
+  "setSkin", "addSkin", "removeSkin", "renameSkin", "renameConstraint", "setSkinAttachment", "setSkinBones", "updateClipping", "updateBoundingBox",
 ]);
 
 /** Ops that may change the Live2D rig (they replace model.live2d, so the others can share it). */
@@ -417,29 +365,15 @@ const SPINE_ONLY = new Set<string>([
   "addBone", "updateBone", "removeBone", "renameBone", "autoWeight", "setWeights", "adjustWeights", "setKeys", "setSlotKeys",
   "setDrawOrderKeys", "setDeformKeys", "addIk", "updateIk", "removeIk", "moveIk", "setIkKeys", "addBoneChain",
   "setConstraint", "updateConstraint", "removeConstraint", "setConstraintOrder", "setConstraintKeys",
-  "setSkin", "addSkin", "removeSkin", "renameSkin", "setSkinAttachment", "setSkinBones", "updateClipping", "updateBoundingBox",
+  "setSkin", "addSkin", "removeSkin", "renameSkin", "renameConstraint", "setSkinAttachment", "setSkinBones", "updateClipping", "updateBoundingBox",
 ]);
-/** Awaken2D's spring bones: Spine export drops them (Spine 4.2 physics constraints work differently), Live2D has physics3. */
-const SPRING_OPS = new Set<string>(["addPhysics", "updatePhysics", "removePhysics", "setPhysicsKeys"]);
 /** Parameters and the Live2D rig: Live2D models only. */
 const LIVE2D_ONLY = new Set<string>(["addParameter", "updateParameter", "renameParameter", "removeParameter", "setParamTrack", ...LIVE2D_OP_NAMES]);
-/** Awaken2D's own parameter effects (bone keys, blend shapes, warps, combos): neither format has them. */
-const UNTARGETED_ONLY = new Set<string>([
-  "setParamBoneKeys", "setParamSlotKeys", "setParamShape", "addWarp", "updateWarp", "removeWarp", "setParamWarp", "clearParamKeys",
-  "addCombo", "removeCombo", "setComboKey", "removeComboKey",
-]);
-
-/** Refuses ops the model's target (Spine or Live2D) does not support. Models without a target allow everything. */
+/** Refuses ops the model's target (Spine or Live2D) does not support. */
 function checkTarget(m: Model, op: Op): void {
   const t = m.target;
   if (!t || !op || typeof op !== "object") return;
   const name = op.op;
-  if (SPRING_OPS.has(name)) {
-    throw new Error(`${name} (Awaken2D spring bones) is not exported to ${t === "spine" ? "Spine" : "Live2D"}, so ${t} models do not use it${t === "spine" ? "; animate secondary motion with bone keys" : "; Live2D physics comes from physics3 (rig_live2d_import)"}`);
-  }
-  if (UNTARGETED_ONLY.has(name)) {
-    throw new Error(`${name} (Awaken2D's own parameter effects) exports to neither Spine nor Live2D, so ${t} models do not use it${t === "live2d" ? "; shape Live2D keyforms with setKeyform / setKeyformKeys" : ""}`);
-  }
   if (t === "live2d" && SPINE_ONLY.has(name)) {
     throw new Error(`${name} is for Spine models (bones, weights, IK and bone / slot / deform / draw-order timelines); this is a Live2D model: use deformers, keyforms and parameter tracks`);
   }
@@ -448,8 +382,7 @@ function checkTarget(m: Model, op: Op): void {
   }
   if (op.op === "clearKeys") {
     if (t === "spine" && op.param) throw new Error("Spine models have no parameter tracks");
-    if (t === "live2d" && (op.bone || op.slot || op.ik || op.physics)) throw new Error("Live2D models only have parameter, part-opacity and event tracks");
-    if (t === "spine" && op.physics) throw new Error("Spine models have no spring-bone tracks");
+    if (t === "live2d" && (op.bone || op.slot || op.ik)) throw new Error("Live2D models only have parameter, part-opacity and event tracks");
   }
   if (t === "live2d") {
     if (op.op === "addSlot" && op.bone !== "root") throw new Error('Live2D models have no bones: slots sit on "root"');
@@ -463,21 +396,17 @@ function checkTarget(m: Model, op: Op): void {
 /** Why a model cannot become the given target (empty when it can). */
 export function targetConflicts(m: Model, target: ModelTarget): string[] {
   const out: string[] = [];
-  const legacy = (m.parameters ?? []).some((p) => p.bones || p.slots || p.meshes || p.warps) || m.warps?.length || m.combos?.length;
-  if (legacy) out.push("Awaken2D parameter effects (bone keys, blend shapes, warps or combos)");
   if (target === "live2d") {
     if (m.bones.length > 1) out.push(`${m.bones.length - 1} bone(s) besides root`);
     if (m.ik?.length) out.push("IK constraints");
-    if (m.physics?.length) out.push("spring bones");
+    if (m.transforms?.length || m.paths?.length || m.spinePhysics?.length || m.sliders?.length) out.push("Spine constraints");
     for (const [name, a] of Object.entries(m.animations ?? {})) {
-      if (Object.keys(a.bones ?? {}).length || Object.keys(a.slots ?? {}).length || Object.keys(a.deform ?? {}).length || a.drawOrder?.length || Object.keys(a.ik ?? {}).length || Object.keys(a.physics ?? {}).length) {
-        out.push(`bone / slot / deform / draw-order / IK / physics tracks in "${name}"`);
+      if (Object.keys(a.bones ?? {}).length || Object.keys(a.slots ?? {}).length || Object.keys(a.deform ?? {}).length || a.drawOrder?.length || Object.keys(a.ik ?? {}).length) {
+        out.push(`bone / slot / deform / draw-order / IK tracks in "${name}"`);
       }
     }
   } else {
     if (m.live2d || Object.values(m.attachments).some((a) => a.live2d)) out.push("a Live2D rig");
-    if (m.physics?.length) out.push("spring bones (not exported to Spine)");
-    for (const [name, a] of Object.entries(m.animations ?? {})) if (Object.keys(a.physics ?? {}).length) out.push(`spring-bone tracks in "${name}"`);
     if (m.parameters?.length) out.push(`${m.parameters.length} parameter(s)`);
     for (const [name, a] of Object.entries(m.animations ?? {})) {
       if (Object.keys(a.params ?? {}).length || Object.keys(a.partOpacity ?? {}).length) out.push(`parameter / part tracks in "${name}"`);
@@ -496,14 +425,33 @@ function applyOne(m: Model, op: Op): string {
       if (parent !== null) requireBone(m, parent);
       const bone: Bone = { id: op.id, parent, x: 0, y: 0, rotation: 0, scaleX: 1, scaleY: 1, length: 0 };
       assignLocal(bone, op);
+      if (op.color !== undefined) bone.color = assertColor(op.color);
+      if (op.icon !== undefined) {
+        if (!/^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(op.icon)) throw new Error("bone icon must be a named Spine icon");
+        bone.icon = op.icon;
+      }
       m.bones.push(bone);
       if (op.start || op.end) placeInWorld(m, bone, op.start, op.end);
       return `added bone ${op.id} (parent ${parent ?? "none"})`;
     }
     case "updateBone": {
       const bone = requireBone(m, op.id);
+      if (op.color !== undefined) {
+        if (op.color === null) delete bone.color;
+        else bone.color = assertColor(op.color);
+        const legacy = (m.meta?.spine as { bones?: Record<string, { color?: string; icon?: string }> } | undefined)?.bones?.[op.id];
+        if (legacy) delete legacy.color;
+      }
+      if (op.icon !== undefined) {
+        if (op.icon === null) delete bone.icon;
+        else if (/^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(op.icon)) bone.icon = op.icon;
+        else throw new Error("bone icon must be a named Spine icon");
+        const legacy = (m.meta?.spine as { bones?: Record<string, { icon?: string }> } | undefined)?.bones?.[op.id];
+        if (legacy) delete legacy.icon;
+      }
+      if ((op.color !== undefined || op.icon !== undefined) && Object.keys(op).every((key) => key === "op" || key === "id" || key === "color" || key === "icon")) return `updated bone ${op.id} appearance`;
       const hasBinds = Object.values(m.attachments).some((a) => a.binds);
-      const before = op.carry || hasBinds ? computePose(m) : null;
+      const before = op.carry || hasBinds || op.compensate ? computePose(m) : null;
       if (op.parent !== undefined && op.parent !== bone.parent) {
         requireBone(m, op.parent);
         if (isDescendant(m, op.parent, op.id)) throw new Error(`"${op.parent}" is a descendant of "${op.id}"`);
@@ -513,7 +461,8 @@ function applyOne(m: Model, op: Op): string {
         const pw = computePose(m).byId.get(op.parent)!.world;
         setLocalFromMatrix(bone, mul(invert(pw), world));
       }
-      assignLocal(bone, op);
+      const { color: _color, icon: _icon, compensate: _compensate, ...transform } = op;
+      assignLocal(bone, transform);
       if (op.inherit !== undefined) {
         if (!INHERITS.includes(op.inherit)) throw new Error(`inherit must be one of ${INHERITS.join(", ")}`);
         if (op.inherit === "normal") delete bone.inherit;
@@ -524,6 +473,11 @@ function applyOne(m: Model, op: Op): string {
         else delete bone.skin;
       }
       if (op.start || op.end) placeInWorld(m, bone, op.start, op.end);
+      if (op.compensate && before) {
+        // children stay where they were: new local = inverse(new parent world) x old world
+        const pw = computePose(m).byId.get(op.id)!.world;
+        for (const child of m.bones.filter((b) => b.parent === op.id)) setLocalFromMatrix(child, mul(invert(pw), before.byId.get(child.id)!.world));
+      }
       if (before && !op.carry) {
         rebindMoved(m, before);
         return `updated bone ${op.id}`;
@@ -556,7 +510,6 @@ function applyOne(m: Model, op: Op): string {
         c.bones = c.bones.map((b) => (b === from ? to : b));
         if (c.target === from) c.target = to;
       }
-      for (const c of m.physics ?? []) c.bones = c.bones.map((b) => (b === from ? to : b));
       const swap = (b: string) => (b === from ? to : b);
       for (const c of m.transforms ?? []) {
         c.bones = c.bones.map(swap);
@@ -567,8 +520,6 @@ function applyOne(m: Model, op: Op): string {
       for (const c of m.sliders ?? []) if (c.bone) c.bone = swap(c.bone);
       for (const sk of Object.values(m.skins ?? {})) if (sk.bones) sk.bones = sk.bones.map(swap);
       for (const a of [...Object.values(m.pathAttachments ?? {}), ...Object.values(m.clippings ?? {}), ...Object.values(m.boundingBoxes ?? {})]) for (const w of a.weights) for (const e of w) if (e[0] === from) e[0] = to;
-      for (const p of m.parameters ?? []) renameKey(p.bones);
-      for (const c of m.combos ?? []) for (const k of c.keys) renameKey(k.bones);
       return `renamed bone ${from} -> ${to}`;
     }
     case "renameSlot": {
@@ -594,7 +545,6 @@ function applyOne(m: Model, op: Op): string {
         renameKey(a.slots);
         for (const k of a.drawOrder ?? []) for (const e of k.offsets) if (e[0] === from) e[0] = to;
       }
-      for (const p of m.parameters ?? []) renameKey(p.slots);
       for (const c of m.paths ?? []) if (c.slot === from) c.slot = to;
       for (const c of Object.values(m.clippings ?? {})) if (c.end === from) c.end = to;
       for (const sk of Object.values(m.skins ?? {})) renameKey(sk.attachments);
@@ -624,12 +574,6 @@ function applyOne(m: Model, op: Op): string {
       ];
       if (spineUsers.length) throw new Error(`bone is used by ${spineUsers.join(", ")}; change or remove them first`);
       for (const sk of Object.values(m.skins ?? {})) if (sk.bones) sk.bones = sk.bones.filter((b) => b !== op.id);
-      const springs = (m.physics ?? []).filter((c) => c.bones.includes(op.id)).map((c) => c.id);
-      if (springs.length) throw new Error(`bone is simulated by physics (${springs.join(", ")}); remove it there first`);
-      const knobs = (m.parameters ?? []).filter((p) => p.bones?.[op.id]).map((p) => p.id);
-      if (knobs.length) throw new Error(`bone is driven by parameters (${knobs.join(", ")}); clearParamKeys first`);
-      const combos = (m.combos ?? []).filter((c) => c.keys.some((k) => k.bones?.[op.id])).map((c) => c.id);
-      if (combos.length) throw new Error(`bone is driven by combos (${combos.join(", ")}); remove those keys first`);
       m.bones = m.bones.filter((b) => b.id !== op.id);
       for (const a of Object.values(m.animations ?? {})) if (a.bones) delete a.bones[op.id];
       return `removed bone ${op.id}`;
@@ -692,7 +636,6 @@ function applyOne(m: Model, op: Op): string {
         if (a.slots) delete a.slots[op.id];
         for (const k of a.drawOrder ?? []) k.offsets = k.offsets.filter((e) => e[0] !== op.id);
       }
-      for (const p of m.parameters ?? []) if (p.slots) delete p.slots[op.id];
       return `removed slot ${op.id}`;
     }
     case "moveSlot": {
@@ -774,10 +717,7 @@ function applyOne(m: Model, op: Op): string {
         delete m.attachments[op.id];
       }
       for (const s of m.slots) if (s.attachment === op.id) s.attachment = null;
-      for (const p of m.parameters ?? []) if (p.meshes) delete p.meshes[op.id];
-      for (const c of m.combos ?? []) for (const k of c.keys) if (k.meshes) delete k.meshes[op.id];
       for (const a of Object.values(m.animations ?? {})) if (a.deform) delete a.deform[op.id];
-      for (const w of m.warps ?? []) w.targets = w.targets.filter((t) => t !== op.id);
       for (const sk of Object.values(m.skins ?? {})) {
         for (const [slot, map] of Object.entries(sk.attachments)) {
           for (const [key, id] of Object.entries(map)) if (id === op.id) delete map[key];
@@ -884,6 +824,15 @@ function applyOne(m: Model, op: Op): string {
       m.events[op.name] = def;
       return `event ${op.name} defined`;
     }
+    case "renameEvent": {
+      if (!m.events?.[op.name]) throw new Error(`unknown event "${op.name}"`);
+      assertId(op.to, "to");
+      if (op.to === op.name) return `event ${op.name} unchanged`;
+      if (m.events[op.to]) throw new Error(`event "${op.to}" already exists`);
+      m.events = Object.fromEntries(Object.entries(m.events).map(([k, v]) => [k === op.name ? op.to : k, v]));
+      for (const a of Object.values(m.animations ?? {})) if (a.events) a.events = a.events.map((e) => (e.name === op.name ? { ...e, name: op.to } : e));
+      return `renamed event ${op.name} -> ${op.to}`;
+    }
     case "setEventKeys": {
       const a = requireAnimation(m, op.animation);
       if (!Array.isArray(op.keys)) throw new Error("keys must be an array of {t, name, int?, float?, string?}");
@@ -931,14 +880,10 @@ function applyOne(m: Model, op: Op): string {
         else delete a.ik?.[op.ik];
       } else if (op.param) {
         delete a.params?.[op.param];
-      } else if (op.physics) {
-        if (op.channel) delete (a.physics?.[op.physics] as Record<string, unknown> | undefined)?.[op.channel];
-        else delete a.physics?.[op.physics];
       } else {
         a.bones = {};
         a.slots = {};
         a.ik = {};
-        a.physics = {};
         a.params = {};
       }
       return `cleared keys in ${op.animation}`;
@@ -1051,39 +996,6 @@ function applyOne(m: Model, op: Op): string {
       });
       return `added bone chain ${ids.join(" -> ")}`;
     }
-    case "addPhysics": {
-      assertId(op.id, "id");
-      if ((m.physics ?? []).some((c) => c.id === op.id)) throw new Error(`physics constraint "${op.id}" already exists`);
-      const c: PhysicsConstraint = { id: op.id, bones: [], ...PHYSICS_DEFAULTS, gravity: [...PHYSICS_DEFAULTS.gravity] };
-      applyPhysicsSettings(c, op);
-      c.bones = checkSpringBones(m, op.bones, op.id);
-      (m.physics ??= []).push(c);
-      return `added physics ${op.id} on ${c.bones.join(", ")} (${c.frequency} Hz, damping ${c.damping}, gravity (${c.gravity.join(", ")}))`;
-    }
-    case "updatePhysics": {
-      const c = requirePhysics(m, op.id);
-      applyPhysicsSettings(c, op);
-      if (op.bones !== undefined) c.bones = checkSpringBones(m, op.bones, op.id);
-      return `updated physics ${op.id}`;
-    }
-    case "removePhysics": {
-      const c = requirePhysics(m, op.id);
-      m.physics = m.physics!.filter((x) => x !== c);
-      for (const a of Object.values(m.animations ?? {})) if (a.physics) delete a.physics[op.id];
-      if (!m.physics.length) delete m.physics;
-      return `removed physics ${op.id}`;
-    }
-    case "setPhysicsKeys": {
-      const a = requireAnimation(m, op.animation);
-      requirePhysics(m, op.physics);
-      if (op.channel !== "mix" && op.channel !== "force") throw new Error("channel must be mix or force");
-      const keys = checkKeys(op.keys, (v) => (op.channel === "mix" ? typeof v === "number" && v >= 0 && v <= 1 : isVec(v)));
-      a.physics ??= {};
-      const tl = (a.physics[op.physics] ??= {});
-      const merged = mergeKeys((tl as Record<string, Key<unknown>[]>)[op.channel], keys, op.mode);
-      (tl as Record<string, Key<unknown>[]>)[op.channel] = merged;
-      return `${op.animation}: physics ${op.physics}.${op.channel} has ${merged.length} keys`;
-    }
     case "addParameter": {
       assertId(op.id, "id");
       if (findParameter(m, op.id)) throw new Error(`parameter "${op.id}" already exists`);
@@ -1120,7 +1032,6 @@ function applyOne(m: Model, op: Op): string {
           delete a.params[from];
         }
       }
-      for (const c of m.combos ?? []) c.params = c.params.map((x) => (x === from ? op.to : x));
       // Live2D model3 groups (EyeBlink / LipSync) and cdi3 combined parameters refer to parameter ids
       const l2meta = (m.meta as { live2d?: { groups?: Array<{ Ids?: string[] }>; displayInfo?: { CombinedParameters?: Array<{ Ids?: string[] }> } } } | undefined)?.live2d;
       if (l2meta) {
@@ -1133,173 +1044,12 @@ function applyOne(m: Model, op: Op): string {
     }
     case "removeParameter": {
       requireParameter(m, op.id);
-      const combos = (m.combos ?? []).filter((c) => c.params.includes(op.id)).map((c) => c.id);
-      if (combos.length) throw new Error(`parameter is used by combos (${combos.join(", ")}); removeCombo first`);
       // Live2D objects keyed on it keep their look at its default
       renameLive2DParam(m, op.id, null);
       m.parameters = m.parameters!.filter((p) => p.id !== op.id);
       for (const a of Object.values(m.animations ?? {})) if (a.params) delete a.params[op.id];
       if (!m.parameters.length) delete m.parameters;
       return `removed parameter ${op.id}`;
-    }
-    case "setParamBoneKeys": {
-      const p = requireParameter(m, op.parameter);
-      requireBone(m, op.bone);
-      if (!["rotate", "translate", "scale"].includes(op.channel)) throw new Error("channel must be rotate, translate or scale");
-      const keys = checkParamKeys(p, op.keys, (v) => (op.channel === "rotate" ? typeof v === "number" && Number.isFinite(v) : isVec(v)));
-      const tl = ((p.bones ??= {})[op.bone] ??= {}) as Record<string, ParamKey<unknown>[]>;
-      tl[op.channel] = mergeParamKeys(tl[op.channel], keys, op.mode);
-      return `${op.parameter}: bone ${op.bone}.${op.channel} has ${tl[op.channel].length} keys`;
-    }
-    case "setParamSlotKeys": {
-      const p = requireParameter(m, op.parameter);
-      requireSlot(m, op.slot);
-      if (op.channel !== "color" && op.channel !== "attachment") throw new Error("channel must be color or attachment");
-      const keys = checkParamKeys(p, op.keys, (v) =>
-        op.channel === "color" ? isColor(v) : v === null || (typeof v === "string" && !!m.attachments[v]),
-      );
-      const tl = ((p.slots ??= {})[op.slot] ??= {}) as Record<string, ParamKey<unknown>[]>;
-      tl[op.channel] = mergeParamKeys(tl[op.channel], keys, op.mode);
-      return `${op.parameter}: slot ${op.slot}.${op.channel} has ${tl[op.channel].length} keys`;
-    }
-    case "setParamShape": {
-      const p = requireParameter(m, op.parameter);
-      const att = requireAttachment(m, op.attachment);
-      if (!Array.isArray(op.keys) || !op.keys.length) throw new Error("keys must be a non-empty array of {at, offsets?, transform?}");
-      const keys = op.keys.map((k, i): ParamKey<VertexOffsets> => {
-        if (typeof k?.at !== "number") throw new Error(`keys[${i}].at must be a number`);
-        return { at: k.at, v: meshKeyOffsets(att, k, `keys[${i}]`) };
-      });
-      checkParamKeys(p, keys, () => true);
-      const meshes = (p.meshes ??= {});
-      meshes[op.attachment] = mergeParamKeys(meshes[op.attachment], keys, op.mode);
-      const moved = keys.map((k) => `${k.v.length} verts at ${k.at}`).join(", ");
-      return `${op.parameter}: shape of ${op.attachment} (${moved})`;
-    }
-    case "addWarp": {
-      assertId(op.id, "id");
-      if (m.warps?.some((w) => w.id === op.id)) throw new Error(`warp "${op.id}" already exists`);
-      if (!Array.isArray(op.targets) || !op.targets.length) throw new Error("targets must list the attachments to deform");
-      op.targets.forEach((t) => requireAttachment(m, t));
-      const cols = op.cols ?? 4;
-      const rows = op.rows ?? 4;
-      if (!Number.isInteger(cols) || !Number.isInteger(rows) || cols < 1 || rows < 1 || cols > 32 || rows > 32) throw new Error("cols and rows must be integers in 1..32");
-      let rect = op.rect;
-      if (!rect) {
-        const pts = op.targets.flatMap((t) => m.attachments[t].vertices);
-        const b = rectOf(pts);
-        const pad = (op.padding ?? 0.1) * Math.max(b.width, b.height);
-        rect = { x: round(b.x - pad), y: round(b.y - pad), width: round(b.width + 2 * pad), height: round(b.height + 2 * pad) };
-      }
-      if (!(rect.width > 0 && rect.height > 0)) throw new Error("rect width and height must be > 0");
-      (m.warps ??= []).push({ id: op.id, rect, cols, rows, targets: [...op.targets] });
-      return `added warp ${op.id} (${cols}x${rows}) over ${op.targets.join(", ")}`;
-    }
-    case "updateWarp": {
-      const w = requireWarp(m, op.id);
-      if (op.targets !== undefined) {
-        if (!Array.isArray(op.targets)) throw new Error("targets must be an array");
-        op.targets.forEach((t) => requireAttachment(m, t));
-        w.targets = [...op.targets];
-      }
-      return `updated warp ${op.id}`;
-    }
-    case "removeWarp": {
-      requireWarp(m, op.id);
-      m.warps = m.warps!.filter((w) => w.id !== op.id);
-      for (const p of m.parameters ?? []) if (p.warps) delete p.warps[op.id];
-      for (const c of m.combos ?? []) for (const k of c.keys) if (k.warps) delete k.warps[op.id];
-      if (!m.warps.length) delete m.warps;
-      return `removed warp ${op.id}`;
-    }
-    case "setParamWarp": {
-      const p = requireParameter(m, op.parameter);
-      const w = requireWarp(m, op.warp);
-      if (!Array.isArray(op.keys) || !op.keys.length) throw new Error("keys must be a non-empty array of {at, preset?, amount?, offsets?, transform?}");
-      const keys = op.keys.map((k, i): ParamKey<Vec2[]> => {
-        if (typeof k?.at !== "number") throw new Error(`keys[${i}].at must be a number`);
-        return { at: k.at, v: warpKeyOffsets(w, k, `keys[${i}]`) };
-      });
-      checkParamKeys(p, keys, () => true);
-      const warps = (p.warps ??= {});
-      warps[op.warp] = mergeParamKeys(warps[op.warp], keys, op.mode);
-      return `${op.parameter}: warp ${op.warp} has ${warps[op.warp].length} keys`;
-    }
-    case "addCombo": {
-      assertId(op.id, "id");
-      if (m.combos?.some((c) => c.id === op.id)) throw new Error(`combo "${op.id}" already exists`);
-      if (!Array.isArray(op.params) || op.params.length < 2 || op.params.length > 3) throw new Error("params must list 2 or 3 parameters");
-      if (new Set(op.params).size !== op.params.length) throw new Error("params must be different parameters");
-      op.params.forEach((p) => requireParameter(m, p));
-      (m.combos ??= []).push({ id: op.id, params: [...op.params], keys: [] });
-      return `added combo ${op.id} over ${op.params.join(" x ")}`;
-    }
-    case "removeCombo": {
-      requireCombo(m, op.id);
-      m.combos = m.combos!.filter((c) => c.id !== op.id);
-      if (!m.combos.length) delete m.combos;
-      return `removed combo ${op.id}`;
-    }
-    case "setComboKey": {
-      const c = requireCombo(m, op.combo);
-      const at = checkComboAt(m, c, op.at);
-      const key: ComboKey = { at };
-      if (op.bones !== undefined) {
-        key.bones = {};
-        for (const [bone, e] of Object.entries(op.bones)) {
-          requireBone(m, bone);
-          if (e.rotate !== undefined && !(typeof e.rotate === "number" && Number.isFinite(e.rotate))) throw new Error(`bones.${bone}.rotate must be a number`);
-          if (e.translate !== undefined && !isVec(e.translate)) throw new Error(`bones.${bone}.translate must be [x, y]`);
-          if (e.scale !== undefined && !isVec(e.scale)) throw new Error(`bones.${bone}.scale must be [sx, sy]`);
-          key.bones[bone] = { ...(e.rotate !== undefined ? { rotate: e.rotate } : {}), ...(e.translate ? { translate: e.translate } : {}), ...(e.scale ? { scale: e.scale } : {}) };
-        }
-      }
-      if (op.meshes !== undefined) {
-        key.meshes = {};
-        for (const [id, spec] of Object.entries(op.meshes)) key.meshes[id] = meshKeyOffsets(requireAttachment(m, id), spec, `meshes.${id}`);
-      }
-      if (op.warps !== undefined) {
-        key.warps = {};
-        for (const [id, spec] of Object.entries(op.warps)) key.warps[id] = warpKeyOffsets(requireWarp(m, id), spec, `warps.${id}`);
-      }
-      const i = c.keys.findIndex((k) => sameAt(k.at, at));
-      let merged = key;
-      if (i >= 0 && op.mode !== "replace") {
-        const old = c.keys[i];
-        merged = {
-          at,
-          ...(old.bones || key.bones ? { bones: { ...old.bones, ...key.bones } } : {}),
-          ...(old.meshes || key.meshes ? { meshes: { ...old.meshes, ...key.meshes } } : {}),
-          ...(old.warps || key.warps ? { warps: { ...old.warps, ...key.warps } } : {}),
-        };
-      }
-      if (i >= 0) c.keys[i] = merged;
-      else c.keys.push(merged);
-      c.keys.sort((a, b) => a.at.reduce((d, v, j) => d || v - b.at[j], 0));
-      const parts = [Object.keys(merged.bones ?? {}).length && `${Object.keys(merged.bones!).length} bones`, Object.keys(merged.meshes ?? {}).length && `${Object.keys(merged.meshes!).length} meshes`, Object.keys(merged.warps ?? {}).length && `${Object.keys(merged.warps!).length} warps`].filter(Boolean);
-      return `combo ${c.id} at (${at.join(", ")}): ${parts.join(", ") || "empty"}`;
-    }
-    case "removeComboKey": {
-      const c = requireCombo(m, op.combo);
-      const at = checkComboAt(m, c, op.at);
-      const before = c.keys.length;
-      c.keys = c.keys.filter((k) => !sameAt(k.at, at));
-      if (c.keys.length === before) throw new Error(`combo ${c.id} has no key at (${at.join(", ")})`);
-      return `combo ${c.id}: removed key at (${at.join(", ")})`;
-    }
-    case "clearParamKeys": {
-      const p = requireParameter(m, op.parameter);
-      if (op.bone) delete p.bones?.[op.bone];
-      else if (op.slot) delete p.slots?.[op.slot];
-      else if (op.attachment) delete p.meshes?.[op.attachment];
-      else if (op.warp) delete p.warps?.[op.warp];
-      else {
-        delete p.bones;
-        delete p.slots;
-        delete p.meshes;
-        delete p.warps;
-      }
-      return `cleared ${op.parameter} keys`;
     }
     case "setParamTrack": {
       const a = requireAnimation(m, op.animation);
@@ -1349,21 +1099,8 @@ function applyOne(m: Model, op: Op): string {
         triangles: op.triangles.map((t) => [t[0], t[1], t[2]] as Tri),
         weights,
       };
-      // blend shapes and combo shapes are per vertex: resample them onto the new vertices
+      // deform keys are per vertex: resample them onto the new vertices
       let shapes = 0;
-      for (const p of m.parameters ?? []) {
-        for (const k of p.meshes?.[op.attachment] ?? []) {
-          k.v = transfer.offsets(k.v);
-          shapes++;
-        }
-      }
-      for (const c of m.combos ?? []) {
-        for (const k of c.keys) {
-          if (!k.meshes?.[op.attachment]) continue;
-          k.meshes[op.attachment] = transfer.offsets(k.meshes[op.attachment]);
-          shapes++;
-        }
-      }
       for (const a of Object.values(m.animations ?? {})) {
         for (const k of a.deform?.[op.attachment] ?? []) {
           k.v = transfer.offsets(k.v);
@@ -1385,10 +1122,10 @@ function applyOne(m: Model, op: Op): string {
       const res = removeVertices(att, op.indices);
       m.attachments[op.attachment] = res.att;
       if (att.live2d) {
-        // keyforms and glue pairs follow the renumbering
+        // keyforms, blend-shape differences and glue pairs follow the renumbering
         const l = structuredClone(att.live2d);
         const n = res.att.vertices.length;
-        for (const kf of l.forms) {
+        for (const kf of [...l.forms, ...(l.blendShapes ?? []).flatMap((sh) => sh.forms)]) {
           const pts = new Array<number>(n * 2).fill(0);
           res.remap.forEach((j, i) => {
             if (j >= 0) {
@@ -1398,21 +1135,13 @@ function applyOne(m: Model, op: Op): string {
           });
           kf.points = pts;
         }
+        const paths = remapPaths(l.paths, res.remap);
+        if (paths) l.paths = paths;
+        else delete l.paths;
         m.attachments[op.attachment] = { ...res.att, live2d: l };
         remapGlueIndices(m, op.attachment, res.remap);
       }
-      // blend shapes refer to vertex indices: follow the renumbering
-      for (const p of m.parameters ?? []) {
-        const keys = p.meshes?.[op.attachment];
-        if (!keys) continue;
-        for (const k of keys) k.v = k.v.filter(([i]) => res.remap[i] >= 0).map(([i, dx, dy]) => [res.remap[i], dx, dy]);
-      }
-      for (const c of m.combos ?? []) {
-        for (const k of c.keys) {
-          const v = k.meshes?.[op.attachment];
-          if (v) k.meshes![op.attachment] = v.filter(([i]) => res.remap[i] >= 0).map(([i, dx, dy]) => [res.remap[i], dx, dy]);
-        }
-      }
+      // deform keys refer to vertex indices: follow the renumbering
       for (const a of Object.values(m.animations ?? {})) {
         for (const k of a.deform?.[op.attachment] ?? []) k.v = k.v.filter(([i]) => res.remap[i] >= 0).map(([i, dx, dy]) => [res.remap[i], dx, dy]);
       }
@@ -1476,6 +1205,30 @@ function applyOne(m: Model, op: Op): string {
       if (!(m as unknown as Record<string, unknown[]>)[field].length) delete (m as unknown as Record<string, unknown>)[field];
       forgetConstraint(m, op.kind, op.id);
       return `removed ${op.kind} constraint ${op.id}`;
+    }
+    case "renameConstraint": {
+      const list: Array<{ id: string }> | undefined = op.kind === "ik" ? m.ik : CONSTRAINT_FIELD[op.kind] ? constraintList(m, op.kind, false) : undefined;
+      if (!list) throw new Error("kind must be ik, transform, path, physics or slider");
+      const c = list.find((x) => x.id === op.id);
+      if (!c) throw new Error(`no ${op.kind} constraint "${op.id}"`);
+      assertId(op.to, "to");
+      if (op.to === op.id) return `${op.kind} constraint ${op.id} unchanged`;
+      // Spine keeps every constraint in one list: names are unique across the kinds
+      if (allConstraintKeys(m).some((k) => k.slice(k.indexOf(":") + 1) === op.to)) throw new Error(`a constraint named "${op.to}" already exists`);
+      c.id = op.to;
+      const from = `${op.kind}:${op.id}`;
+      const to = `${op.kind}:${op.to}`;
+      if (m.constraintOrder) m.constraintOrder = m.constraintOrder.map((k) => (k === from ? to : k));
+      for (const sk of Object.values(m.skins ?? {})) if (sk.constraints) sk.constraints = sk.constraints.map((k) => (k === from ? to : k));
+      const field = op.kind === "ik" ? "ik" : CONSTRAINT_FIELD[op.kind];
+      for (const a of Object.values(m.animations ?? {})) {
+        const group = (a as unknown as Record<string, Record<string, unknown> | undefined>)[field];
+        if (group && op.id in group) {
+          group[op.to] = group[op.id];
+          delete group[op.id];
+        }
+      }
+      return `renamed ${op.kind} constraint ${op.id} -> ${op.to}`;
     }
     case "setConstraintOrder": {
       if (!Array.isArray(op.order)) throw new Error("order must be an array of \"<kind>:<id>\"");
@@ -1668,7 +1421,7 @@ function applyOne(m: Model, op: Op): string {
 // ---------- helpers
 
 /** Display details of a parameter (addParameter / updateParameter): name, group (null or "" clears), decimals, repeat. */
-function setParameterDetails(p: Parameter, op: { name?: string | null; group?: string | null; decimals?: number; repeat?: boolean }): void {
+function setParameterDetails(p: Parameter, op: { name?: string | null; group?: string | null; decimals?: number; repeat?: boolean; combined?: boolean }): void {
   const text = (v: unknown, field: string) => {
     if (v !== null && typeof v !== "string") throw new Error(`${field} must be a string or null`);
     return v === null ? "" : v.trim();
@@ -1690,6 +1443,10 @@ function setParameterDetails(p: Parameter, op: { name?: string | null; group?: s
   if (op.repeat !== undefined) {
     if (op.repeat) p.repeat = true;
     else delete p.repeat;
+  }
+  if (op.combined !== undefined) {
+    if (op.combined) p.combined = true;
+    else delete p.combined;
   }
 }
 
@@ -1785,63 +1542,10 @@ function isVec(v: unknown): v is Vec2 {
   return Array.isArray(v) && v.length === 2 && v.every((n) => typeof n === "number" && Number.isFinite(n));
 }
 
-function requirePhysics(m: Model, id: string): PhysicsConstraint {
-  const c = m.physics?.find((x) => x.id === id);
-  if (!c) throw new Error(`unknown physics constraint "${id}"; physics: ${(m.physics ?? []).map((x) => x.id).join(", ") || "(none)"}`);
-  return c;
-}
-
-function checkSpringBones(m: Model, bones: unknown, self: string): string[] {
-  if (!Array.isArray(bones) || bones.length === 0) throw new Error("bones must list at least one bone");
-  return bones.map((raw) => {
-    const b = requireBone(m, String(raw));
-    if (!(b.length > 0)) throw new Error(`bone "${b.id}" has length 0; spring bones need a length (use addBoneChain or updateBone end)`);
-    const other = (m.physics ?? []).find((c) => c.id !== self && c.bones.includes(b.id));
-    if (other) throw new Error(`bone "${b.id}" is already simulated by "${other.id}"`);
-    return b.id;
-  });
-}
-
-function applyPhysicsSettings(c: PhysicsConstraint, s: PhysicsSettings): void {
-  const range = (k: "damping" | "inertia" | "mix" | "limit" | "frequency", lo: number, hi: number) => {
-    const v = s[k];
-    if (v === undefined) return;
-    if (typeof v !== "number" || !(v >= lo && v <= hi)) throw new Error(`${k} must be between ${lo} and ${hi}`);
-    c[k] = v;
-  };
-  range("frequency", 0.01, 60);
-  range("damping", 0, 10);
-  range("inertia", 0, 1);
-  range("mix", 0, 1);
-  range("limit", 0, 180);
-  if (s.gravity !== undefined) {
-    if (!isVec(s.gravity)) throw new Error("gravity must be [x, y] (world units per second squared)");
-    c.gravity = [s.gravity[0], s.gravity[1]];
-  }
-}
-
 function requireParameter(m: Model, id: string): Parameter {
   const p = findParameter(m, id);
   if (!p) throw new Error(`unknown parameter "${id}"; parameters: ${(m.parameters ?? []).map((x) => x.id).join(", ") || "(none, use addParameter)"}`);
   return p;
-}
-
-function requireCombo(m: Model, id: string): Combo {
-  const c = m.combos?.find((x) => x.id === id);
-  if (!c) throw new Error(`unknown combo "${id}"; combos: ${(m.combos ?? []).map((x) => x.id).join(", ") || "(none, use addCombo)"}`);
-  return c;
-}
-
-const sameAt = (a: number[], b: number[]) => a.length === b.length && a.every((v, i) => Math.abs(v - b[i]) < 1e-9);
-
-function checkComboAt(m: Model, c: Combo, at: unknown): number[] {
-  if (!Array.isArray(at) || at.length !== c.params.length || !at.every((v) => typeof v === "number" && Number.isFinite(v)))
-    throw new Error(`at must list ${c.params.length} numbers (${c.params.join(", ")})`);
-  at.forEach((v, i) => {
-    const p = requireParameter(m, c.params[i]);
-    if (v < Math.min(p.min, p.max) - 1e-9 || v > Math.max(p.min, p.max) + 1e-9) throw new Error(`${p.id} value ${v} is outside [${p.min}, ${p.max}]`);
-  });
-  return at as number[];
 }
 
 /** Sparse vertex offsets from explicit offsets and/or a transform of the setup vertices (summed). */
@@ -1857,47 +1561,6 @@ function meshKeyOffsets(att: MeshAttachment, k: MeshKeySpec, label: string): Ver
   }
   if (k.transform !== undefined) transformOffsets(att.vertices, k.transform).forEach((d, j) => (dense[j] = [dense[j][0] + d[0], dense[j][1] + d[1]]));
   return toSparse(dense);
-}
-
-/** Control-point offsets from presets, explicit offsets and/or a transform of the grid (summed). */
-function warpKeyOffsets(w: Warp, k: WarpKeySpec, label: string): Vec2[] {
-  const grid = warpGrid(w);
-  const acc: Vec2[] = grid.map(() => [0, 0]);
-  const add = (d: Vec2[]) => d.forEach((o, j) => (acc[j] = [acc[j][0] + o[0], acc[j][1] + o[1]]));
-  const presets = k.presets ?? (k.preset !== undefined ? [{ preset: k.preset, amount: k.amount ?? 0 }] : []);
-  for (const pr of presets) {
-    if (!WARP_PRESETS.includes(pr.preset)) throw new Error(`${label}: unknown preset "${pr.preset}"; presets: ${WARP_PRESETS.join(", ")}`);
-    if (typeof pr.amount !== "number") throw new Error(`${label}: preset "${pr.preset}" needs a numeric amount`);
-    add(warpPresetOffsets(w, pr.preset, pr.amount));
-  }
-  if (k.offsets !== undefined) {
-    if (!Array.isArray(k.offsets) || k.offsets.length !== grid.length || !k.offsets.every(isVec))
-      throw new Error(`${label}.offsets must have ${grid.length} [dx, dy] entries (row-major from the bottom row)`);
-    add(k.offsets);
-  }
-  if (k.transform !== undefined) add(transformOffsets(grid, k.transform));
-  return acc.map(([dx, dy]) => [round(dx), round(dy)] as Vec2);
-}
-
-function requireWarp(m: Model, id: string): Warp {
-  const w = m.warps?.find((x) => x.id === id);
-  if (!w) throw new Error(`unknown warp "${id}"; warps: ${(m.warps ?? []).map((x) => x.id).join(", ") || "(none, use addWarp)"}`);
-  return w;
-}
-
-function checkParamKeys<T>(p: Parameter, keys: Array<ParamKey<T>>, valid: (v: unknown) => boolean): ParamKey<T>[] {
-  if (!Array.isArray(keys) || keys.length === 0) throw new Error("keys must be a non-empty array of {at, v}");
-  keys.forEach((k, i) => {
-    if (typeof k?.at !== "number" || !Number.isFinite(k.at)) throw new Error(`keys[${i}].at must be a number (a value of ${p.id})`);
-    if (k.at < p.min - 1e-9 || k.at > p.max + 1e-9) throw new Error(`keys[${i}].at ${k.at} is outside ${p.id}'s range [${p.min}, ${p.max}]`);
-    if (!valid(k.v)) throw new Error(`keys[${i}].v has the wrong type: ${JSON.stringify(k.v)}`);
-  });
-  return keys.map((k) => ({ at: k.at, v: k.v }));
-}
-
-function mergeParamKeys<T>(existing: ParamKey<T>[] | undefined, keys: ParamKey<T>[], mode: "replace" | "merge" = "merge"): ParamKey<T>[] {
-  const base = mode === "merge" ? (existing ?? []).filter((e) => !keys.some((k) => Math.abs(k.at - e.at) < 1e-9)) : [];
-  return [...base, ...keys].sort((a, b) => a.at - b.at);
 }
 
 function requireIk(m: Model, id: string): IkConstraint {
@@ -2163,8 +1826,6 @@ function carryMeshes(m: Model, before: Pose): number {
         const k = mats[i] ?? [1, 0, 0, 1, 0, 0];
         return [i, round(k[0] * dx + k[2] * dy), round(k[1] * dx + k[3] * dy)] as [number, number, number];
       });
-    for (const p of m.parameters ?? []) for (const key of p.meshes?.[attId] ?? []) key.v = rotateOffsets(key.v);
-    for (const c of m.combos ?? []) for (const key of c.keys) if (key.meshes?.[attId]) key.meshes[attId] = rotateOffsets(key.meshes[attId]);
     for (const a of Object.values(m.animations ?? {})) for (const key of a.deform?.[attId] ?? []) key.v = rotateOffsets(key.v);
   }
   return count;

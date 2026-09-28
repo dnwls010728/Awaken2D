@@ -5,14 +5,17 @@ import type {
   Deformer,
   DrawOrderGroup,
   KeyformGrid,
+  Live2DBlendShape,
   Live2DMesh,
   Live2DRig,
   MeshAttachment,
   Model,
+  Parameter,
   RGB,
   RotationKeyform,
   Vec2,
   WarpDeformer,
+  WarpKeyform,
 } from "./types.ts";
 import type { ParamValues } from "./params.ts";
 
@@ -147,6 +150,72 @@ function blendPoints(terms: Array<[number, number]>, get: (i: number) => number[
     for (let k = 0; k < m; k++) out[k] += p[k] * w;
   }
   return out;
+}
+
+// ---------- blend shapes (Cubism 4.2+)
+
+/** Piecewise-linear weight of a blend-shape constraint at a value (clamped outside its points). */
+function constraintWeight(values: Array<[number, number]>, x: number): number {
+  if (!values.length) return 1;
+  if (x <= values[0][0]) return values[0][1];
+  const last = values[values.length - 1];
+  if (x >= last[0]) return last[1];
+  for (let i = 1; i < values.length; i++) {
+    const [k1, w1] = values[i];
+    if (x <= k1) {
+      const [k0, w0] = values[i - 1];
+      return k1 > k0 ? w0 + ((w1 - w0) * (x - k0)) / (k1 - k0) : w1;
+    }
+  }
+  return last[1];
+}
+
+/**
+ * The differences an object's blend shapes add at these parameter values: [form, weight] pairs, the forms around each
+ * blend-shape parameter's value (clamped to its keys) weighted by the interpolation and the constraints.
+ */
+function blendShapeTerms<F>(shapes: Live2DBlendShape<F>[] | undefined, params: Map<string, Parameter>, v: ParamValues): Array<[F, number]> {
+  if (!shapes?.length) return [];
+  const out: Array<[F, number]> = [];
+  for (const s of shapes) {
+    const keys = params.get(s.param)?.blendShape?.keys;
+    if (!keys?.length) continue;
+    let w = 1;
+    for (const c of s.constraints ?? []) w = Math.min(w, constraintWeight(c.values, v[c.param] ?? 0));
+    if (!w) continue;
+    const [lower, f] = keySegment(keys, v[s.param] ?? 0);
+    if (f < 1 && s.forms[lower] !== undefined) out.push([s.forms[lower], w * (1 - f)]);
+    if (f > 0 && s.forms[lower + 1] !== undefined) out.push([s.forms[lower + 1], w * f]);
+  }
+  return out;
+}
+
+const addNum = <F>(terms: Array<[F, number]>, get: (f: F) => number | undefined): number => {
+  let s = 0;
+  for (const [f, w] of terms) s += (get(f) ?? 0) * w;
+  return s;
+};
+
+/** Adds the blend-shape color differences; like the core, the result stays within 0..1. */
+function addRGB<F>(out: RGB, terms: Array<[F, number]>, get: (f: F) => RGB | undefined): RGB {
+  if (!terms.length) return out;
+  for (const [f, w] of terms) {
+    const c = get(f);
+    if (!c) continue;
+    out[0] += c[0] * w;
+    out[1] += c[1] * w;
+    out[2] += c[2] * w;
+  }
+  for (let i = 0; i < 3; i++) out[i] = Math.min(1, Math.max(0, out[i]));
+  return out;
+}
+
+function addPoints<F>(out: Float64Array, terms: Array<[F, number]>, get: (f: F) => number[]): void {
+  for (const [f, w] of terms) {
+    const p = get(f);
+    const m = Math.min(out.length, p.length);
+    for (let k = 0; k < m; k++) out[k] += p[k] * w;
+  }
 }
 
 // ---------- deformers
@@ -313,7 +382,7 @@ function computeFrame(model: Model, values: ParamValues): Live2DFrame {
     const b = gridBlend(p.grid, v, eps);
     const parentOn = !p.parent || partEnabled.get(p.parent) !== false;
     partEnabled.set(id, !p.disabled && !b.outside && parentOn);
-    partDrawOrder.set(id, blendNum(b.terms, (i) => p.drawOrders[i] ?? 500));
+    partDrawOrder.set(id, blendNum(b.terms, (i) => p.drawOrders[i] ?? 500) + addNum(blendShapeTerms(p.blendShapes, params, v), (x) => x));
   };
   for (const p of rig.parts) visitPart(p.id);
 
@@ -329,23 +398,26 @@ function computeFrame(model: Model, values: ParamValues): Live2DFrame {
     const ps = parent ? deformers.get(parent.id) : undefined;
     const b = gridBlend(d.grid, v, eps);
     const enabled = !d.disabled && !b.outside && (!d.part || partEnabled.get(d.part) !== false) && (!ps || ps.enabled);
-    const opacity = blendNum(b.terms, (i) => d.forms[i]?.opacity ?? 1) * (ps?.opacity ?? 1);
-    const ownMul = blendRGB(b.terms, (i) => d.forms[i]?.multiply, ONE);
-    const ownScr = blendRGB(b.terms, (i) => d.forms[i]?.screen, ZERO);
+    const bs = blendShapeTerms<WarpKeyform | RotationKeyform>(d.blendShapes, params, v);
+    const opacity = (blendNum(b.terms, (i) => d.forms[i]?.opacity ?? 1) + addNum(bs, (f) => f.opacity)) * (ps?.opacity ?? 1);
+    const ownMul = addRGB(blendRGB(b.terms, (i) => d.forms[i]?.multiply, ONE), bs, (f) => f.multiply);
+    const ownScr = addRGB(blendRGB(b.terms, (i) => d.forms[i]?.screen, ZERO), bs, (f) => f.screen);
     const multiply = ps ? mulRGB(ps.multiply, ownMul) : ownMul;
     const screen = ps ? screenRGB(ps.screen, ownScr) : ownScr;
     if (d.type === "warp") {
       const n = (d.cols + 1) * (d.rows + 1) * 2;
       const grid = blendPoints(b.terms, (i) => d.forms[i]?.points ?? [], n);
+      addPoints(grid, bs, (f) => (f as WarpKeyform).points);
       if (ps && parent) mapPoints(parent, ps, grid);
       deformers.set(d.id, { enabled, opacity, multiply, screen, scale: ps?.scale ?? 1, grid });
     } else {
       const forms = d.forms;
+      const rs = bs as Array<[RotationKeyform, number]>;
       const r: RotationState = {
-        x: blendNum(b.terms, (i) => forms[i]?.x ?? 0),
-        y: blendNum(b.terms, (i) => forms[i]?.y ?? 0),
-        angle: blendNum(b.terms, (i) => forms[i]?.angle ?? 0),
-        scale: blendNum(b.terms, (i) => forms[i]?.scale ?? 1),
+        x: blendNum(b.terms, (i) => forms[i]?.x ?? 0) + addNum(rs, (f) => f.x),
+        y: blendNum(b.terms, (i) => forms[i]?.y ?? 0) + addNum(rs, (f) => f.y),
+        angle: blendNum(b.terms, (i) => forms[i]?.angle ?? 0) + addNum(rs, (f) => f.angle),
+        scale: blendNum(b.terms, (i) => forms[i]?.scale ?? 1) + addNum(rs, (f) => f.scale),
         // reflection is not interpolated: the first surrounding form decides
         reflectX: !!forms[b.terms[0]?.[0] ?? 0]?.reflectX,
         reflectY: !!forms[b.terms[0]?.[0] ?? 0]?.reflectY,
@@ -370,16 +442,18 @@ function computeFrame(model: Model, values: ParamValues): Live2DFrame {
     const b = gridBlend(m.grid, v, eps);
     const parent = m.deformer ? defById.get(m.deformer) : undefined;
     const ps = parent ? deformers.get(parent.id) : undefined;
+    const bs = blendShapeTerms(m.blendShapes, params, v);
     const points = blendPoints(b.terms, (i) => m.forms[i]?.points ?? [], m.forms[0]?.points.length ?? att.vertices.length * 2);
+    addPoints(points, bs, (f) => f.points);
     if (parent && ps) mapPoints(parent, ps, points);
-    const ownMul = blendRGB(b.terms, (i) => m.forms[i]?.multiply, ONE);
-    const ownScr = blendRGB(b.terms, (i) => m.forms[i]?.screen, ZERO);
-    const opacity = blendNum(b.terms, (i) => m.forms[i]?.opacity ?? 1) * (ps?.opacity ?? 1);
+    const ownMul = addRGB(blendRGB(b.terms, (i) => m.forms[i]?.multiply, ONE), bs, (f) => f.multiply);
+    const ownScr = addRGB(blendRGB(b.terms, (i) => m.forms[i]?.screen, ZERO), bs, (f) => f.screen);
+    const opacity = (blendNum(b.terms, (i) => m.forms[i]?.opacity ?? 1) + addNum(bs, (f) => f.opacity)) * (ps?.opacity ?? 1);
     meshes.set(id, {
       part: m.part,
       points,
       opacity,
-      drawOrder: blendNum(b.terms, (i) => m.forms[i]?.drawOrder ?? 500),
+      drawOrder: blendNum(b.terms, (i) => m.forms[i]?.drawOrder ?? 500) + addNum(bs, (f) => f.drawOrder),
       multiply: ps ? mulRGB(ps.multiply, ownMul) : ownMul,
       screen: ps ? screenRGB(ps.screen, ownScr) : ownScr,
       enabled: !m.disabled && !b.outside && (!m.part || partEnabled.get(m.part) !== false) && (!ps || ps.enabled),
@@ -391,7 +465,9 @@ function computeFrame(model: Model, values: ParamValues): Live2DFrame {
     const a = meshes.get(g.a);
     const bm = meshes.get(g.b);
     if (!a || !bm) continue;
-    const intensity = blendNum(gridBlend(g.grid, v, eps).terms, (i) => g.intensity[i] ?? 0);
+    const bsI = blendShapeTerms(g.blendShapes, params, v);
+    let intensity = blendNum(gridBlend(g.grid, v, eps).terms, (i) => g.intensity[i] ?? 0) + addNum(bsI, (x) => x);
+    if (bsI.length) intensity = Math.min(1, Math.max(0, intensity));
     for (let k = 0; k + 1 < g.pairs.length; k += 2) {
       const ia = g.pairs[k] * 2;
       const ib = g.pairs[k + 1] * 2;
@@ -482,6 +558,54 @@ export function live2dVertices(model: Model, frame: Live2DFrame, attachmentId: s
   const s = model.live2d?.canvas.pixelsPerUnit || 1;
   const out: Vec2[] = new Array(m.points.length / 2);
   for (let i = 0; i < out.length; i++) out[i] = [m.points[i * 2] * s, -m.points[i * 2 + 1] * s];
+  return out;
+}
+
+/** Deformers and glue of a frame in world space (what the editor and the renderer draw as guides). */
+export interface Live2DGuides {
+  warps: Array<{ id: string; cols: number; rows: number; points: Vec2[]; hidden: boolean }>;
+  /** Rotation deformers: origin, and the unit direction of the deformer's "up" (its handle). */
+  rotations: Array<{ id: string; origin: Vec2; up: Vec2; hidden: boolean }>;
+  /** Glue: the glued vertex pairs of its two meshes. */
+  glue: Array<{ id: string; a: string; b: string; lines: Array<[Vec2, Vec2]> }>;
+}
+
+/** World-space guides for the deformers and glue of a Live2D frame; deformers switched off (disabled, outside their keys) are left out. */
+export function live2dGuides(model: Model, frame: Live2DFrame): Live2DGuides {
+  const rig = model.live2d;
+  const out: Live2DGuides = { warps: [], rotations: [], glue: [] };
+  if (!rig) return out;
+  const s = rig.canvas.pixelsPerUnit || 1;
+  const world = (x: number, y: number): Vec2 => [x * s, -y * s];
+  for (const d of rig.deformers) {
+    const st = frame.deformers.get(d.id);
+    if (!st?.enabled) continue;
+    if (d.type === "warp" && st.grid) {
+      const points: Vec2[] = [];
+      for (let i = 0; i < st.grid.length; i += 2) points.push(world(st.grid[i], st.grid[i + 1]));
+      out.warps.push({ id: d.id, cols: d.cols, rows: d.rows, points, hidden: !!d.hidden });
+    } else if (d.type === "rotation" && st.rotation) {
+      const o = rotationPoint(st.rotation, d.baseAngle, 0, 0);
+      // the handle points along the deformer's local "up" (-y in canvas space)
+      const t = rotationPoint(st.rotation, d.baseAngle, 0, -1);
+      const dx = (t[0] - o[0]) * s;
+      const dy = -(t[1] - o[1]) * s;
+      const len = Math.hypot(dx, dy) || 1;
+      out.rotations.push({ id: d.id, origin: world(o[0], o[1]), up: [dx / len, dy / len], hidden: !!d.hidden });
+    }
+  }
+  for (const g of rig.glue ?? []) {
+    const a = frame.meshes.get(g.a);
+    const b = frame.meshes.get(g.b);
+    if (!a || !b) continue;
+    const lines: Array<[Vec2, Vec2]> = [];
+    for (let i = 0; i + 1 < g.pairs.length; i += 2) {
+      const ia = g.pairs[i] * 2;
+      const ib = g.pairs[i + 1] * 2;
+      lines.push([world(a.points[ia], a.points[ia + 1]), world(b.points[ib], b.points[ib + 1])]);
+    }
+    out.glue.push({ id: g.id, a: g.a, b: g.b, lines });
+  }
   return out;
 }
 

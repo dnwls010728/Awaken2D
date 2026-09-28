@@ -17,7 +17,7 @@ import {
   validateModel,
 } from "../core/index.ts";
 import type { MeshRole, Op } from "../core/index.ts";
-import { encodePNG, renderParamSheet, renderPose, renderSheet } from "../render/index.ts";
+import { encodePNG, OVERLAY_NAMES, parseOverlay, renderParamSheet, renderPose, renderSheet } from "../render/index.ts";
 import type { Overlay } from "../render/index.ts";
 import { importLayers, proposeBones, readLayerSource } from "../import/index.ts";
 import type { OriginSpec } from "../import/index.ts";
@@ -45,8 +45,10 @@ interface Tool {
 const fileProp = { type: "string", description: "Path to the model JSON (*.rig.json), relative to the server's working directory or absolute." };
 const overlayProp = {
   type: "array",
-  items: { type: "string", enum: ["bones", "names", "mesh", "axes", "warps"] },
-  description: "Debug overlays drawn on top: bones (segments+joints), names (bone labels), mesh (wireframe), axes (world origin).",
+  items: { type: "string", enum: [...OVERLAY_NAMES, "all"] },
+  description:
+    "Debug overlays drawn on top: bones (segments+joints), names (bone labels), mesh (wireframe), axes (world origin), deformers (Live2D warp lattices in green, rotation deformers as a red circle with a handle), glue (Live2D glued " +
+    "vertex pairs), noart (leave the art out, e.g. to see the deformer tree alone).",
 };
 
 const paramsProp = {
@@ -64,14 +66,8 @@ const text = (t: string): Content => ({ type: "text", text: t });
 const image = (png: Buffer): Content => ({ type: "image", data: png.toString("base64"), mimeType: "image/png" });
 
 function overlayOf(v: unknown): Overlay {
-  const o: Overlay = {};
   const list = typeof v === "string" ? v.split(",") : Array.isArray(v) ? v : [];
-  for (const s of list) {
-    const k = String(s).trim();
-    if (k === "all") Object.assign(o, { bones: true, names: true, mesh: true, axes: true });
-    else if (k === "bones" || k === "names" || k === "mesh" || k === "axes" || k === "warps") o[k] = true;
-  }
-  return o;
+  return parseOverlay(list.map((s) => String(s).trim()).filter(Boolean).join(","));
 }
 
 const str = (v: unknown, name: string): string => {
@@ -92,14 +88,14 @@ const TOOLS: Tool[] = [
     name: "rig_new",
     description:
       "Creates a new empty model. The target decides what it is made for, and the editor and ops only offer that kind's features: " +
-      '"spine" (Spine2D: bones, weighted meshes, IK, bone / slot / deform / draw-order / event timelines; exports with rig_spine_export) or ' +
+      '"spine" (Spine: bones, weighted meshes, IK, bone / slot / deform / draw-order / event timelines; exports with rig_spine_export) or ' +
       '"live2d" (Live2D: art meshes on a canvas shaped by parameters through keyforms, warp / rotation deformers, parts, parameter and part-opacity ' +
       "tracks; exports with rig_live2d_export). Ask the user which one when it is not clear. New models are only made this way (the editor has no New).",
     inputSchema: {
       type: "object",
       properties: {
         file: fileProp,
-        target: { type: "string", enum: ["spine", "live2d"], description: "Spine2D or Live2D model." },
+        target: { type: "string", enum: ["spine", "live2d"], description: "Spine or Live2D model." },
         name: { type: "string" },
         force: { type: "boolean", description: "Overwrite an existing file." },
       },
@@ -111,7 +107,7 @@ const TOOLS: Tool[] = [
       if (existsSync(file) && a.force !== true) throw new Error(`${file} already exists (pass force: true to overwrite)`);
       mkdirSync(dirname(file), { recursive: true });
       saveModel(file, emptyModel(typeof a.name === "string" ? a.name : "untitled", a.target));
-      return { content: [text(`created ${file} (${a.target === "live2d" ? "Live2D" : "Spine2D"} model)`)] };
+      return { content: [text(`created ${file} (${a.target === "live2d" ? "Live2D" : "Spine"} model)`)] };
     },
   },
   {
@@ -204,7 +200,7 @@ const TOOLS: Tool[] = [
         overlay: overlayProp,
         background: { type: "string", description: '"#rrggbb" or "transparent" (default white).' },
         out: { type: "string", description: "Also write the PNG to this path." },
-        physics: { type: "boolean", description: "Simulate physics (spring bones, Live2D physics3; default true); false shows the pose without it." },
+        physics: { type: "boolean", description: "Simulate physics (Spine physics constraints, Live2D physics3; default true); false shows the pose without it." },
         params: paramsProp,
       },
       required: ["file"],
@@ -241,7 +237,7 @@ const TOOLS: Tool[] = [
         cellSize: { type: "number", description: "Longest side of each cell (default 256)." },
         overlay: overlayProp,
         out: { type: "string", description: "Also write the PNG to this path." },
-        physics: { type: "boolean", description: "Simulate physics (spring bones, Live2D physics3; default true); false shows the pose without it." },
+        physics: { type: "boolean", description: "Simulate physics (Spine physics constraints, Live2D physics3; default true); false shows the pose without it." },
         params: paramsProp,
       },
       required: ["file", "animation"],
@@ -275,7 +271,7 @@ const TOOLS: Tool[] = [
         file: fileProp,
         origin: {
           description:
-            'World origin in source pixels: "content" (default, bottom-center of the art), "canvas-bottom", "center", "top-left", or [x, y].',
+            'World origin in source pixels: "content" (bottom-center of the art), "canvas-bottom", "center" (canvas center), "top-left", or [x, y]. Default: canvas center for Live2D, content for Spine.',
           anyOf: [
             { type: "string", enum: ["content", "canvas-bottom", "center", "top-left"] },
             { type: "array", items: { type: "number" }, minItems: 2, maxItems: 2 },
@@ -298,9 +294,10 @@ const TOOLS: Tool[] = [
         },
         spacing: { type: "number", description: "Grid cell size in pixels (implies mesh grid; default ~1/8 of each layer's longest side)." },
         includeHidden: { type: "boolean", description: "Also import hidden layers (their slots start empty)." },
-        target: { type: "string", enum: ["spine", "live2d"], description: "Spine2D model (layers on the root bone, then bones) or Live2D model (layers become art meshes on the canvas, then deformers and keyforms)." },
+        target: { type: "string", enum: ["spine", "live2d"], description: "Spine model (layers on the root bone, then bones) or Live2D model (layers become art meshes on the canvas, then deformers and keyforms)." },
         propose: { type: "boolean", description: "Apply the proposed skeleton right away (see rig_propose_bones)." },
         ik: { type: "boolean", description: "With propose: also add two-bone IK to arms and legs (targets at wrists/ankles)." },
+        physics: { type: "boolean", description: "With propose: tails and other dangling elongated layers become 3-bone chains with Spine physics constraints." },
         force: { type: "boolean", description: "Overwrite an existing model file." },
       },
       required: ["source", "file", "target"],
@@ -308,8 +305,7 @@ const TOOLS: Tool[] = [
     run: (a) => {
       const file = resolve(str(a.file, "file"));
       if (a.target !== "spine" && a.target !== "live2d") throw new Error('target must be "spine" or "live2d"');
-      if (a.physics === true) throw new Error("physics (spring bones) is not exported to Spine or Live2D, so imports do not take it");
-      if (a.target === "live2d" && (a.propose === true || a.ik === true)) throw new Error("propose / ik build bones: Spine models only");
+      if (a.target === "live2d" && (a.propose === true || a.ik === true || a.physics === true)) throw new Error("propose / ik / physics build bones: Spine models only");
       if (existsSync(file) && a.force !== true) throw new Error(`${file} already exists (pass force: true to overwrite)`);
       const res = importLayers(readLayerSource(str(a.source, "source")), file, {
         origin: a.origin as OriginSpec | undefined,
@@ -324,7 +320,7 @@ const TOOLS: Tool[] = [
       let model = applyOps(res.model, [{ op: "setTarget", target: a.target }]).model;
       const lines = [...res.log.map((l) => "- " + l), ...res.warnings.map((w) => "WARN " + w)];
       if (a.propose === true) {
-        const p = proposeBones(model, { ik: a.ik === true });
+        const p = proposeBones(model, { ik: a.ik === true, physics: a.physics === true });
         model = applyOps(model, p.ops).model;
         lines.push("proposed skeleton:", ...p.report.map((l) => "- " + l));
       }
@@ -374,7 +370,7 @@ const TOOLS: Tool[] = [
     description:
       "Exports a model for Spine: <name>.json (Spine 4.x skeleton data), <name>.atlas + <name>.png (packed atlas for runtimes) and images/<region>.png " +
       "(for the Spine editor's Import Data) into a folder. Data imported from Spine and not edited is written back verbatim; edited meshes, keys and " +
-      "deforms are converted. Parameters/warps/combos (Live2D side) and spring bones have no Spine equivalent and are reported as not exported.",
+      "deforms are converted. Parameters (Live2D side) have no Spine equivalent and are reported as not exported.",
     inputSchema: {
       type: "object",
       properties: {
@@ -394,14 +390,15 @@ const TOOLS: Tool[] = [
   {
     name: "rig_live2d_import",
     description:
-      "Imports a Live2D Cubism runtime model (name.model3.json, or a bare .moc3) into a new Awaken2D model: parameters, parts, warp and rotation " +
-      "deformers, art meshes with their keyforms, glue, masks, draw-order groups, motions (parameter and part-opacity curves), physics (physics3) and " +
-      "display names (cdi3). The rig keeps Cubism's own structure and poses exactly like the Cubism Core; textures are copied to images/ next to the model. " +
-      "Expressions, pose groups and model curves are kept for rig_live2d_export.",
+      "Imports a Cubism Editor model (.cmo3) into a new Awaken2D model: parameters (with groups and blend shapes), parts, warp and rotation " +
+      "deformers, art meshes with their keyforms, glue, masks, draw-order groups, physics, display names, hidden / locked flags and part labels. " +
+      "The rig keeps Cubism's own structure and poses exactly like the Cubism Core; the texture atlases are written to images/ next to the model. " +
+      "Motions come from the Cubism animation files (.can3): `motions`, or every .can3 next to the .cmo3. Runtime exports (.model3.json / .moc3) are not imported.",
     inputSchema: {
       type: "object",
       properties: {
-        source: { type: "string", description: "Path to the .model3.json (preferred) or .moc3." },
+        source: { type: "string", description: "Path to the .cmo3." },
+        motions: { type: "array", items: { type: "string" }, description: "Animation files (.can3) to read motions from (default: every .can3 in the .cmo3's folder)." },
         file: fileProp,
         force: { type: "boolean", description: "Overwrite an existing model file." },
       },
@@ -411,7 +408,7 @@ const TOOLS: Tool[] = [
       const file = resolve(str(a.file, "file"));
       if (existsSync(file) && a.force !== true) throw new Error(`${file} already exists (pass force: true to overwrite)`);
       mkdirSync(dirname(file), { recursive: true });
-      const res = importLive2D(str(a.source, "source"), file);
+      const res = importLive2D(str(a.source, "source"), file, Array.isArray(a.motions) ? { motions: a.motions.map(String) } : {});
       const lines = [...res.log.map((l) => "- " + l), ...res.warnings.map((w) => "WARN " + w), formatIssues(validateModel(res.model, { baseDir: dirname(file) })), `saved ${file}`];
       const img = renderPose(res.model, dirname(file), { size: 512 });
       return { content: [text(lines.join("\n")), image(encodePNG(img))] };
@@ -422,7 +419,7 @@ const TOOLS: Tool[] = [
     description:
       "Exports a model as a Live2D Cubism runtime model into a folder: <name>.model3.json, <name>.moc3, <name>.physics3.json, <name>.cdi3.json, " +
       "<name>.pose3.json, motion/*.motion3.json and <name>.textures/*.png (loadable by Cubism SDKs and viewers; the Cubism Editor itself opens only .cmo3). " +
-      "The Live2D rig is written as it is; meshes without Live2D keyforms become static art meshes; bones, spring bones and bone/slot timelines are reported as not exported.",
+      "The Live2D rig is written as it is; meshes without Live2D keyforms become static art meshes; bones and bone/slot timelines are reported as not exported.",
     inputSchema: {
       type: "object",
       properties: {
@@ -449,7 +446,7 @@ const TOOLS: Tool[] = [
         file: fileProp,
         apply: { type: "boolean", description: "Apply the proposed ops and return a preview." },
         ik: { type: "boolean", description: "Also add two-bone IK to arm and leg chains (targets at wrists/ankles, joints bend outward)." },
-        physics: { type: "boolean", description: "Turn tails and other dangling elongated layers into 3-bone spring chains. Only for models without a target: Spine and Live2D exports drop spring bones." },
+        physics: { type: "boolean", description: "Turn tails and other dangling elongated layers into 3-bone chains with Spine physics constraints (sway)." },
       },
       required: ["file"],
     },
@@ -457,7 +454,6 @@ const TOOLS: Tool[] = [
       const file = str(a.file, "file");
       const { model, baseDir } = loadModel(file);
       if (model.target === "live2d") throw new Error("this is a Live2D model: it has no bones (use deformers)");
-      if (a.physics === true && model.target) throw new Error("physics (spring bones) is not exported to Spine: only models without a target use it");
       const p = proposeBones(model, { ik: a.ik === true, physics: a.physics === true });
       const report = p.report.map((l) => "- " + l).join("\n");
       if (a.apply !== true) return { content: [text(report + "\n\nops:\n" + JSON.stringify(p.ops))] };
@@ -472,8 +468,8 @@ const TOOLS: Tool[] = [
     name: "rig_param_sheet",
     description:
       "Shows what a parameter does: renders the model at evenly spaced values from the parameter's min to max, labeled " +
-      "(a grid when param2 is given, e.g. AngleX across and AngleY down). Use after setParamShape/setParamWarp/setParamBoneKeys " +
-      "to check the result; add overlay warps to see the lattice.",
+      "(a grid when param2 is given, e.g. AngleX across and AngleY down). Use after setKeyform / setKeyformKeys " +
+      "to check the result; add overlay deformers to see the lattices.",
     inputSchema: {
       type: "object",
       properties: {
@@ -539,7 +535,7 @@ function handle(req: Req): unknown {
         capabilities: { tools: { listChanged: false } },
         serverInfo: { name: "awaken2d", version: VERSION },
         instructions:
-          "Awaken2D edits 2D animation models stored as JSON files. Every model is either a Spine2D model (target \"spine\": bones, weights, IK, spring bones, timelines) or a Live2D model (target \"live2d\": parameters, keyforms, deformers, parts); ops for the other kind are refused (rig_describe shows the target). Workflow: rig_spec (once) -> rig_import (layered art, propose: true), rig_spine_import (Spine data), rig_live2d_import (Live2D model3/moc3) or rig_new -> rig_apply ops " +
+          "Awaken2D edits 2D animation models stored as JSON files. Every model is either a Spine model (target \"spine\": bones, weights, constraints, skins, timelines) or a Live2D model (target \"live2d\": parameters, keyforms, deformers, parts); ops for the other kind are refused (rig_describe shows the target). Workflow: rig_spec (once) -> rig_import (layered art, propose: true), rig_spine_import (Spine data), rig_live2d_import (Cubism Editor .cmo3) or rig_new -> rig_apply ops " +
           "(bones, meshes, weights, animations) -> rig_validate -> rig_render / rig_sheet to look at the result, and iterate. rig_spine_export / rig_live2d_export write Spine / Live2D data back.",
       };
     case "ping":

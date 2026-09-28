@@ -8,7 +8,7 @@
   </head>
   <body>
     <header class="toolbar">
-      <span class="brand">Awaken<b>2D</b></span>
+      <span class="brand" translate="no">Awaken<b>2D</b></span>
       <details class="menu" id="menu-file">
         <summary>File</summary>
         <div class="menu-body">
@@ -43,9 +43,10 @@
         <div class="menu-body">
           <div class="menu-label">Overlays</div>
           <label class="spine-only"><input type="checkbox" id="ov-bones" checked /> Bones</label>
-          <label class="spine-only"><input type="checkbox" id="ov-names" checked /> Bone names</label>
+          <label class="spine-only"><input type="checkbox" id="ov-names" /> Bone names</label>
           <label><input type="checkbox" id="ov-mesh" /> Mesh wireframe</label>
-          <label class="untargeted-only"><input type="checkbox" id="ov-warps" /> Warp lattices</label>
+          <label class="live2d-only"><input type="checkbox" id="ov-l2d-deformers" /> Deformers</label>
+          <label class="live2d-only"><input type="checkbox" id="ov-l2d-glue" /> Glue</label>
           <div class="menu-label">Evaluate</div>
           <label class="spine-only"><input type="checkbox" id="ov-ik" checked /> IK constraints</label>
           <label><input type="checkbox" id="ov-physics" checked /> Physics</label>
@@ -90,8 +91,6 @@
           <button data-tab="skins" class="spine-only">Skins</button>
           <button data-tab="events" class="spine-only">Events</button>
           <button data-tab="images" class="spine-only">Images</button>
-          <button data-tab="ik" class="untargeted-only">IK</button>
-          <button data-tab="physics" class="untargeted-only">Physics</button>
         </nav>
         <div class="search"><input id="search" type="search" placeholder="Filter…" /></div>
         <div id="tree" class="tree"></div>
@@ -118,9 +117,12 @@
           <button data-tool="bone" class="spine-only" title="New bone (B): drag from joint to tip">
             <svg viewBox="0 0 20 20"><path d="M4 16l9-9" stroke-width="3" stroke="currentColor" stroke-linecap="round" fill="none" /><circle cx="4" cy="16" r="2.5" /><path d="M15 2v3h3v2h-3v3h-2V7h-3V5h3V2z" /></svg>
           </button>
-          <div class="tp-sep"></div>
-          <button id="carry" class="toggle active spine-only" title="Meshes follow bones in Setup (T)">
-            <svg viewBox="0 0 20 20"><path d="M8.5 11.5a3.5 3.5 0 0 0 5 0l3-3a3.5 3.5 0 0 0-5-5l-1 1 1.4 1.4 1-1a1.5 1.5 0 0 1 2.2 2.2l-3 3a1.5 1.5 0 0 1-2.2 0zm3-3a3.5 3.5 0 0 0-5 0l-3 3a3.5 3.5 0 0 0 5 5l1-1-1.4-1.4-1 1a1.5 1.5 0 0 1-2.2-2.2l3-3a1.5 1.5 0 0 1 2.2 0z" /></svg>
+          <div class="tp-sep spine-only compensate"></div>
+          <button id="comp-bones" class="toggle spine-only compensate" title="Bone compensation (Shift+T)">
+            <svg viewBox="0 0 20 20"><path d="M3 15l7-7" stroke-width="2.6" stroke="currentColor" stroke-linecap="round" fill="none" /><circle cx="3" cy="15" r="2" /><path d="M11 9l5-5" stroke-width="1.6" stroke="currentColor" stroke-linecap="round" stroke-dasharray="1.5 1.8" fill="none" /><path d="M13.5 12.5h4v5h-4zM14.3 12.5v-1.2a1.2 1.2 0 0 1 2.4 0v1.2" fill="none" stroke="currentColor" stroke-width="1.2" /></svg>
+          </button>
+          <button id="comp-images" class="toggle spine-only compensate" title="Image compensation (T)">
+            <svg viewBox="0 0 20 20"><path d="M2 3h11v9H2z" fill="none" stroke="currentColor" stroke-width="1.4" /><path d="M3.5 10.5l3-3.5 2.2 2.4 1.6-1.6 1.8 2.7z" /><circle cx="10" cy="5.8" r="1.1" /><path d="M13.5 12.5h4v5h-4zM14.3 12.5v-1.2a1.2 1.2 0 0 1 2.4 0v1.2" fill="none" stroke="currentColor" stroke-width="1.2" /></svg>
           </button>
         </div>
         <div class="banner" id="banner" hidden>
@@ -129,6 +131,18 @@
           <button id="keep-mine" class="primary">Keep my edits</button>
         </div>
         <div class="vp-tools">
+          <div class="l2d-show live2d-only" id="l2d-view">
+            <button data-view="lock" title="Lock drawable objects (Shift+A): art meshes, deformation paths and art paths are not picked in the viewport">
+              <svg viewBox="0 0 20 20"><g stroke="#4ea1ff" stroke-width="1.3" fill="none"><rect x="1.5" y="1.5" width="9" height="9" /><path d="M1.5 1.5l9 9M10.5 1.5l-9 9" /></g><path d="M9 12c1.2-2.4 2.4-2.8 3.6-4.8s1.2-3.2 2.4-4" stroke="#e0a43a" stroke-width="2.4" stroke-linecap="round" fill="none" /><path d="M1.5 17.5c2-3.2 4-0.8 5.6-4s2.4-3.2 4-3.6" stroke="#26b5b5" stroke-width="1.2" fill="none" /><g fill="#26b5b5"><circle cx="1.8" cy="17.3" r="1.3" /><circle cx="7.2" cy="13.4" r="1.3" /></g><g><path d="M13.6 13v-2a2.4 2.4 0 0 1 4.8 0v2" fill="none" stroke="#e8d44d" stroke-width="1.5" /><rect x="12.4" y="12.6" width="7.2" height="6" rx="1" fill="#e8d44d" /></g></svg>
+            </button>
+            <button data-view="deflock" title="Lock deformers (Shift+D): warp and rotation deformers are not picked or edited in the viewport">
+              <svg viewBox="0 0 20 20"><g fill="#3fb96c"><rect x="1.5" y="1.5" width="4" height="4" rx="0.8" /><rect x="6.5" y="1.5" width="4" height="4" rx="0.8" /><rect x="1.5" y="6.5" width="4" height="4" rx="0.8" /><rect x="6.5" y="6.5" width="4" height="4" rx="0.8" /></g><g fill="none" stroke="#e5534b" stroke-width="1.6"><circle cx="7" cy="14.5" r="3.6" /><path d="M7 14.5V8.8M5.6 10.2L7 8.8l1.4 1.4" /></g><g><path d="M13.6 13v-2a2.4 2.4 0 0 1 4.8 0v2" fill="none" stroke="#e8d44d" stroke-width="1.5" /><rect x="12.4" y="12.6" width="7.2" height="6" rx="1" fill="#e8d44d" /></g></svg>
+            </button>
+            <span class="sep"></span>
+            <button data-view="drawables" title="Show / hide drawable objects: art meshes, deformation paths and art paths">
+              <svg viewBox="0 0 20 20"><g stroke="#4ea1ff" stroke-width="1.3" fill="none"><rect x="1.5" y="1.5" width="9" height="9" /><path d="M1.5 1.5l9 9M10.5 1.5l-9 9" /></g><path d="M9 12c1.2-2.4 2.4-2.8 3.6-4.8s1.2-3.2 2.4-4" stroke="#e0a43a" stroke-width="2.4" stroke-linecap="round" fill="none" /><path d="M1.5 17.5c2-3.2 4-0.8 5.6-4s2.4-3.2 4-3.6" stroke="#26b5b5" stroke-width="1.2" fill="none" /><g fill="#26b5b5"><circle cx="1.8" cy="17.3" r="1.3" /><circle cx="7.2" cy="13.4" r="1.3" /></g><g><path d="M11.2 15.5c1.6-2.6 3.3-3.6 4.8-3.6s3.2 1 4.8 3.6c-1.6 2.6-3.3 3.6-4.8 3.6s-3.2-1-4.8-3.6z" fill="#17191d" stroke="#e6e8eb" stroke-width="1.2" /><circle cx="16" cy="15.5" r="1.6" fill="#e6e8eb" /></g></svg>
+            </button>
+          </div>
           <span id="zoom" class="chip" translate="no">100%</span>
           <button id="fit" title="Fit view (F)">Fit</button>
         </div>

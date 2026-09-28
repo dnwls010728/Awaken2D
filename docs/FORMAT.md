@@ -31,22 +31,21 @@ references, compute world placement and weights, and are atomic.
   "animations": { ... }
 }
 ```
-(everything but `format`, `name`, `bones`, `slots`, `attachments` is optional.)
+(everything but `format`, `name`, `target`, `bones`, `slots`, `attachments` is optional.)
 
 **target** says what the model is made for, and only that kind's features are available (ops for the other kind
 are refused, the editor hides them):
-- `"spine"` — Spine2D: bones (with inherit modes), weighted meshes, skins, IK / transform / path / physics / slider
-  constraints, bone / slot / deform / draw-order / event / constraint timelines. No parameters and no spring bones
-  (Spine export drops them). Exports with `rig spine-export`. Spine models are posed by Spine's own update rules
+- `"spine"` — Spine: bones (with inherit modes), weighted meshes, skins, IK / transform / path / physics / slider
+  constraints, bone / slot / deform / draw-order / event / constraint timelines. No parameters. Exports with `rig spine-export`. Spine models are posed by Spine's own update rules
   (see "Spine constraints").
 - `"live2d"` — Live2D: art meshes on a canvas (on the root bone, no other bones), parameters, keyforms, warp and
   rotation deformers, parts, physics3 and pose groups, animated by parameter, part-opacity and event tracks.
   Exports with `rig live2d-export`.
 New models are made by agents only (`rig_new` / `rig new` with `target`; imports set it: Spine data → spine,
-Live2D data → live2d, layered art → the `target` given). Older files without a target allow everything, including
-Awaken2D's own parameter effects (bone keys, blend shapes, warps, combos), which neither format exports; `setTarget`
-gives them one when nothing of the other kind is in the way. Awaken2D spring bones (`physics`) are only for models
-without a target, like the demo character (`rig import --target none`).
+Live2D data → live2d, layered art → the `target` given). Files saved without one (older versions) load as Live2D
+when they have a Live2D rig, else as Spine; what older versions had besides (Awaken2D's own spring bones, parameter
+bone keys / blend shapes, parameter warps and combos, none of which either format exports) is dropped on load.
+`setTarget` turns a model with only art into the other kind.
 
 ### bones
 
@@ -183,7 +182,7 @@ the official runtime: the Spine examples pose within about 0.05 units.
 - **boundingBoxes** (bounding box attachments): `{ "<id>": { "vertices": [...], "weights": [...], "color"? } }` — a
   polygon games test hits against (Spine's SkeletonBounds) while a slot shows it; setup world space, weighted like
   mesh vertices, deform keys allowed. Never drawn (the editor outlines it, dashed, in its color).
-- **spinePhysics** (Spine 4.2+ physics; `physics` is Awaken2D's spring bones): `{ "id", "bone", "x"?, "y"?,
+- **spinePhysics** (Spine 4.2+ physics): `{ "id", "bone", "x"?, "y"?,
   "rotate"?, "scaleX"?, "shearX"? (how much of each is simulated), "scaleY"?, "limit"? (5000), "fps"? (60),
   "inertia", "strength", "damping", "mass", "wind", "gravity", "mix", "global"?: [settings changed by the ""
   timelines] }`. Simulated from the start of playback (PoseSimulator: the editor and sheets), and live in the editor
@@ -203,87 +202,17 @@ global settings), `"sliders"`; bone timelines also take `inherit` (stepped) and 
 scaleX scaleY shearX shearY` tracks, which replace that axis (imported Spine data keeps them when the axes are keyed
 at different times). Bezier eases on Spine models are sampled like the runtime (10 straight segments).
 
-### physics (spring bones)
+### parameters (Live2D)
 
-Only for models without a target: neither Spine nor Live2D export spring bones (Spine and Live2D models refuse
-`addPhysics` / `updatePhysics` / `removePhysics` / `setPhysicsKeys`).
-
-```json
-"physics": [
-  { "id": "tail_spring", "bones": ["tail_1", "tail_2", "tail_3"], "frequency": 2.5, "damping": 0.35,
-    "gravity": [0, -1500], "inertia": 1, "mix": 1, "limit": 60 }
-]
-```
-- Each listed bone's tip is a point mass on a damped spring pulled toward the animated pose (after IK).
-  The bone keeps its length and only rotates; children follow their simulated parent.
-- `frequency` Hz (stiffness: 1 = floppy, 5 = snappy), `damping` ratio (0 = wobbles long, 1 = no overshoot),
-  `gravity` world units/s² (0 by default; droop ≈ gravity / (2π·frequency)² units), `inertia` 0..1 (1 = lags
-  fully behind parent motion, 0 = carried along), `mix` 0..1, `limit` max degrees away from the animated angle
-  (0 = unlimited). Defaults: 2 Hz, 0.3, [0, 0], 1, 1, 0.
-- Deterministic: simulated at 120 Hz from the start of the animation after 1.5 s of settling in the first frame's
-  pose (so gravity sag is at rest); looping animations run 2 warm-up loops first. The same model, animation and
-  time always give the same pose. The skinning setup pose ignores physics; renders, sheets and validation apply it
-  (`--no-physics` / MCP `physics: false` to compare).
-- Animation timelines: `"physics": { "tail_spring": { "mix": [...], "force": [{ "t": 0, "v": [800, 0] }] } }`
-  (`force` is added to gravity, e.g. wind gusts).
-- Spring bones need length > 0 and a bone may belong to only one physics constraint. Use `addBoneChain` to make a
-  multi-segment chain for hair, tails, ribbons, then `autoWeight` the mesh to those bones.
-
-### parameters and warps (Live2D-style deformation)
-
-A **parameter** is a named knob with a range. Everything it drives is stored on it, keyed by parameter value
-(`at`), linear in between and clamped at the ends. Effects of different parameters add up.
+A **parameter** is a named knob with a range that Live2D keyforms are keyed on (see live2d below); animations key
+it over time: `"params": { "ParamMouthOpenY": [{ "t": 0, "v": 0 }, { "t": 0.2, "v": 1 }] }`. Values: explicit
+override (render `--param`, editor sliders) > animation track > default, clamped to the range.
 
 ```json
 "parameters": [
-  { "id": "EyeOpen", "min": 0, "max": 1, "default": 1,
-    "meshes": { "eye_L": [{ "at": 0, "v": [[0, 0.4, 9.1], [3, -0.4, -9.2]] }, { "at": 1, "v": [] }] } },
-  { "id": "AngleX", "min": -30, "max": 30, "default": 0,
-    "warps": { "face": [{ "at": -30, "v": [[0, 0], ...] }, { "at": 30, "v": [...] }] },
-    "bones": { "head": { "rotate": [{ "at": -30, "v": -4 }, { "at": 30, "v": 4 }] } } }
-],
-"warps": [
-  { "id": "face", "rect": { "x": -70, "y": 420, "width": 150, "height": 160 }, "cols": 4, "rows": 4,
-    "targets": ["head", "hair", "eye_L", "eye_R", "mouth"] }
+  { "id": "ParamAngleX", "min": -30, "max": 30, "default": 0, "name": "Angle X", "group": "ParamGroupFace" }
 ]
 ```
-- `bones`: rotate/translate add to the pose, scale multiplies (like a Live2D rotation deformer).
-- `slots`: `color` tints multiply; `attachment` switches (the last key with `at` <= value wins).
-- `meshes`: blend shapes, sparse `[vertexIndex, dx, dy]` offsets in setup space.
-- `warps`: one `[dx, dy]` per lattice control point, `(cols+1)*(rows+1)` points, row-major from the bottom row.
-- A **warp** is a lattice over a setup-space rectangle; moving its control points bends every target mesh
-  (bilinear per cell; points outside the rect take the edge displacement). Warps apply in array order, so a
-  second, smaller warp on the eyes and mouth on top of a face warp gives parallax.
-- Geometry order: blend shapes, then warps, then skinning. So a head warp deforms the face in its rest pose and
-  the head bone then carries the result, like a warp deformer under a rotation deformer in Live2D.
-- Animations key parameters over time: `"params": { "MouthOpen": [{ "t": 0, "v": 0 }, { "t": 0.2, "v": 1 }] }`.
-  Values: explicit override (render `--param`, editor sliders) > animation track > default.
-- The raw setup pose (skinning bind pose) ignores parameters; renders, sheets, validation and the editor apply them.
-
-### combos (combination keyforms)
-
-Some shapes depend on two or three parameters **together** (Live2D's multi-parameter keys): the head turned right
-*and* up is not just "right" + "up", an open mouth that also smiles is wider than both. A **combo** is a grid
-over 2-3 parameters with keyforms at chosen grid points:
-
-```json
-"combos": [
-  { "id": "head_angles", "params": ["AngleX", "AngleY"],
-    "keys": [
-      { "at": [30, 30], "warps": { "face": [[0, 0], ...] }, "bones": { "head": { "rotate": 2 } } },
-      { "at": [-30, 30], "meshes": { "mouth": [[4, 0, 1.5]] } }
-    ] }
-]
-```
-- Each axis of the grid is the keyed values plus the parameter's **default**; grid points without a key mean
-  "no change". Values in between blend multilinearly (bilinear for two parameters), clamped at the grid edges.
-- The result **adds** to each parameter's own effects. So corner keys are corrections that only show when the
-  parameters combine: `AngleX = 30` alone looks exactly as before, `AngleX = 30, AngleY = 30` gets the key in
-  full, `(15, 15)` gets a quarter of it. (To author the whole shape in the combo instead, leave the single
-  parameters unkeyed for that target.)
-- Targets: `bones` (rotate/translate add, scale multiplies as 1 + weight*(s-1)), `meshes` (sparse
-  `[vertexIndex, dx, dy]`), `warps` (one `[dx, dy]` per control point).
-- Check a combo with `rig param-sheet --param A --param2 B`: the grid shows every combination.
 
 ### live2d (Live2D Cubism rig)
 
@@ -324,14 +253,42 @@ precision of a key sits on it, and an object whose parameter leaves its keyed ra
   hold. Draw order: each draw-order group sorts its items by their current draw order (truncated to whole numbers,
   clamped to min..max), ties keep the list order; a part item draws its own group at its place.
 - **Glue** pulls vertex pairs of two meshes together after deforming, by the keyed intensity.
+- **Blend shapes** (Cubism 4.2+): a parameter with `blendShape: { keys, base }` is a blend-shape parameter. Art
+  meshes, deformers, parts and glue bound to it carry `blendShapes: [{ param, forms, constraints? }]`, one form per
+  key: *differences* (mesh / warp `points`, `opacity`, `drawOrder`, `multiply` / `screen`, rotation `x` / `y` /
+  `angle` / `scale`; a number for a part's draw order or a glue's intensity) added on top of the keyforms,
+  interpolated between the keys around the parameter's value (clamped to its keys). `constraints: [{ param, values:
+  [[value, weight], ...] }]` limit a shape: its weight is the smallest of their piecewise-linear weights (e.g. vowel
+  A limited by I, U, E, O). Colors and glue intensity with blend shapes stay within 0..1. They are read from and
+  written to moc3 (5.0 when present); `setKeyformKeys` refuses blend-shape parameters.
+- **Editor flags**: `hidden` on art meshes and deformers is Cubism's visible flag: the editor leaves hidden meshes out
+  of the view and the Live2D export leaves them out, like the Cubism Editor's (the runtime has no visible flag for
+  meshes); a hidden deformer is exported with the flag; `visible: false` on a part is opacity 0, also at runtime.
+  `locked` (parts, deformers, art meshes: not picked in the editor's viewport; a locked part locks what it holds)
+  and a part's `label` color (the editor's parts list) are editor state, kept in the file and not exported.
+  `name` on art meshes (`live2d.name`) and deformers is the Cubism Editor's display name (from a .cmo3; shown in
+  the parts tree, not exported); a glue's `part` is the part it is listed under in the parts tree (editor state).
+- **Deformation paths** (`live2d.paths` on an art mesh, Cubism's path tool; editing aids, not exported): `{ points:
+  [{ tri: [i, j, k], w: [a, b, c], corner? }], closed?, bind: [{ vertex, t, weight }], width? }`. Each control point
+  is pinned inside a mesh triangle (vertex indices, barycentric weights), so the path follows the mesh in every
+  keyform; the curve is a chordal Catmull-Rom spline through them (within a pixel of Cubism's for most points). Bound
+  vertices sit at `t` (control point index + fraction) along it. In the editor's Mesh mode, dragging a control
+  point of the selected mesh bends the curve and carries the bound vertices (kept at their offset in the curve's
+  frame, by `weight`) into the keyform at the pinned values (a `setKeyform` with `moves`). Removing vertices
+  renumbers paths (a path whose pinning vertex is removed is dropped); new geometry re-pins them where they were.
+- **Looking at the rig**: `rig render --overlay deformers,glue` (MCP `overlay: ["deformers", "glue"]`) draws the
+  posed warp lattices (green), rotation deformers (red circle, handle along the deformer's up) and glued vertex
+  pairs; add `noart` to leave the art out. `rig describe` lists the deformer tree and the part tree (what each part
+  holds, flags and labels).
 - **physics** (physics3.json): pendulums from input parameters (X, Y, Angle, with weights) to output parameters,
-  simulated like the Cubism Framework at 60 fps (or the file's `fps`), before the rig is evaluated. Awaken2D spring
-  bones (`physics` at the top level) are a different thing (bones).
+  simulated like the Cubism Framework at 60 fps (or the file's `fps`), before the rig is evaluated.
 - **pose** (pose3.json): in each group one part is shown. Animations key `partOpacity` tracks
   (`"partOpacity": { "PartArmB": [{ "t": 0, "v": 1 }] }`); for grouped parts the keyed values pick the shown
   part and the others fade out over `fadeIn` seconds (Cubism's CubismPose); ungrouped parts take the value as
   their opacity.
-- Parameters may carry `name`, `group` (display, from cdi3), `repeat` and `decimals`.
+- Parameters may carry `name`, `group` (display, from cdi3), `repeat` and `decimals`. `combined: true` links a
+  parameter with the next one in the list: the editor shows the pair as one 2D control (Cubism's chain link); it is
+  written to cdi3 as `CombinedParameters` and read from a .cmo3 or cdi3.
 
 ## Edit ops
 
@@ -340,9 +297,9 @@ Send an array; the whole batch is applied atomically. Ids are names as in Spine:
 | op | fields |
 |----|--------|
 | `addBone` | `id`, `parent?` (default: the root), local `x y rotation length scaleX scaleY`, **or** world `start: [x,y]` + `end: [x,y]` (sets position, rotation and length) |
-| `updateBone` | `id`, any of the addBone fields; `parent` re-parents keeping the world transform; `carry: true` moves the meshes bound to the bone and its descendants along with the setup change (default: art stays, i.e. re-binding); Spine's `inherit?` and `skin?` |
+| `updateBone` | `id`, any of the addBone fields (`shearX` / `shearY` in degrees, 0 clears); `parent` re-parents keeping the world transform; `carry: true` moves the meshes bound to the bone and its descendants along with the setup change (default: art stays, i.e. re-binding); `compensate: true` keeps the child bones where they are in the world (Spine's bone compensation); Spine's `inherit?` and `skin?` |
 | `removeBone` | `id` (fails while it has children, slots, or weights) |
-| `renameBone` / `renameSlot` | `id`, `to` — every reference (children, slots, weights, animations, IK, springs, parameters, clips) follows |
+| `renameBone` / `renameSlot` | `id`, `to` — every reference (children, slots, weights, animations, constraints, skins, clips) follows |
 | `addSlot` | `id`, `bone`, `attachment?`, `color?`, `index?` (draw position; default front) |
 | `updateSlot` | `id`, `bone?`, `attachment?` (null hides), `color?`, `blend?`, `clip?`, `dark?` (Spine two-color tint `#rrggbb`, null removes) |
 | `removeSlot` / `moveSlot` | `id` / `id`, `index` |
@@ -361,16 +318,17 @@ Send an array; the whole batch is applied atomically. Ids are names as in Spine:
 | `removeAnimation` / `renameAnimation` | `name` / `name`, `to` |
 | `setKeys` | `animation`, `bone`, `channel` (`rotate`/`translate`/`scale`/`shear`, single-axis `translateX`... `shearY`, or `inherit` with stepped mode names), `keys`, `mode?` (`replace` default, or `merge`), `space?` (`local` default; `world` = translate values are world positions, rotate values world angles, converted using the parent's animated pose) |
 | `setSlotKeys` | `animation`, `slot`, `channel` (`attachment`/`color`/`dark`), `keys`, `mode?` |
-| `setDeformKeys` | `animation`, `attachment`, `keys` [{`t`, `offsets?` [[vertex, dx, dy]], `transform?` (as setParamShape), `ease?`}], `mode` replace/merge — mesh deformation over time (setup-space offsets) |
+| `setDeformKeys` | `animation`, `attachment`, `keys` [{`t`, `offsets?` [[vertex, dx, dy]], `transform?` {`scale`, `rotate`, `translate`, `pivot?`, `falloff?`: {`center?`, `radius`}, `only?`} applied to the setup vertices (e.g. close an eye: `{"scale": [1, 0.1]}`), `ease?`}], `mode` replace/merge — mesh deformation over time (setup-space offsets) |
 | `setEvent` | `name`, optional `int` `float` `string` `audio` `volume` `balance` defaults; `remove: true` deletes it (and its keys) |
+| `renameEvent` | `name`, `to` — keys in every animation follow |
 | `setEventKeys` | `animation`, `keys` [{`t`, `name`, `int?` ...}], `mode` replace/merge |
 | `setKeyform` | `target` (Live2D art mesh / deformer / part / glue id), `at?` {param: value} (a grid point; missing params use their defaults), `moves?` [[i, x, y]] world positions or `offsets?` [[i, dx, dy]] world offsets (mesh vertices, warp lattice points), `origin?` [x, y] world / `angle?` / `scale?` / `reflectX?` / `reflectY?` (rotation deformer), `opacity?`, `drawOrder?`, `multiply?` / `screen?` [r, g, b] or null, `intensity?` (glue) — edits one keyform; world input goes through the parent's inverse mapping at that keyform's parameter values |
 | `setKeyformKeys` | `target`, `param`, `keys` [values] or null — keys an object on a parameter (adds the axis, adds/moves keys) or unbinds it (null); the forms are resampled from the old grid, so the look does not change |
 | `addDeformer` | `id`, `type` warp/rotation, `parent?`, `part?`, warp: `rect?` {x, y, width, height} world, `cols?`/`rows?` (3), `bilinear?` (true); rotation: `origin?` [x, y] world, `baseAngle?`; `children?` [art meshes / deformers] moved under it keeping their look (exact at their keyforms) |
-| `updateDeformer` | `id`, `parent?` (re-expresses it, keeping its look), `part?`, `bilinear?`, `hidden?`, `disabled?` |
+| `updateDeformer` | `id`, `parent?` (re-expresses it, keeping its look), `part?`, `bilinear?`, `hidden?`, `disabled?`, `locked?` |
 | `removeDeformer` | `id` — its children move to its parent, keeping their look |
-| `setLive2DMesh` | `attachment`, `deformer?` (re-expresses its keyforms), `part?`, `hidden?`, `disabled?` — also turns a plain mesh into a Live2D art mesh |
-| `addPart` / `updatePart` / `removePart` | `id`, `parent?`, `name?`, `visible?` (`disabled?` on update); removal moves contents to the parent part |
+| `setLive2DMesh` | `attachment`, `deformer?` (re-expresses its keyforms), `part?`, `hidden?`, `disabled?`, `locked?`, `paths?` (deformation paths, replaced; null removes) — also turns a plain mesh into a Live2D art mesh |
+| `addPart` / `updatePart` / `removePart` | `id`, `parent?`, `name?`, `visible?` (`disabled?`, `locked?`, `label?` "#rrggbb" or null on update); removal moves contents to the parent part |
 | `enableLive2D` | `canvas?`, `attachments?` (default all) — creates a Live2D rig (canvas from the meshes' bounds) and turns meshes into art meshes with one keyform |
 | `setPartOpacityKeys` | `animation`, `part`, `keys` [{t, v 0..1, ease?}], `mode` replace/merge |
 | `setDrawOrderKeys` | `animation`, `keys`: [{ `t`, `offsets`: [[slotId, offset], ...] }], `mode` replace/merge. Stepped draw-order changes (Spine-style): each listed slot moves `offset` places from its setup draw order (positive = toward the front); the others keep their order. Use it for a hand passing in front of the body or face. `keys: []` with replace clears it |
@@ -382,6 +340,7 @@ Send an array; the whole batch is applied atomically. Ids are names as in Spine:
 | `setConstraint` | `kind` (`transform`/`path`/`physics`/`slider`), `constraint` (the full definition, see "Spine constraints") — adds it, or replaces the one with that id |
 | `updateConstraint` | `kind`, `id`, `set` {field: value} (null removes an optional field) |
 | `removeConstraint` | `kind`, `id` — also drops it from the order, the skins and the animations |
+| `renameConstraint` | `kind` (`ik`/`transform`/`path`/`physics`/`slider`), `id`, `to` — the order, skins and animations follow; names are unique across the kinds |
 | `setConstraintOrder` | `order` ["ik:leg", "transform:follow", ...] — the evaluation order (unlisted ones follow) |
 | `setConstraintKeys` | `animation`, `kind`, `constraint` (physics: `""` = the global settings), `channel` (transform: `rotate x y scaleX scaleY shearY` mixes; path: `position spacing rotate x y`; physics: `inertia strength damping mass wind gravity mix`, or `reset` with keys [{t}]; slider: `time mix`), `keys`, `mode?` |
 | `setSkin` | `name` (null: default attachments only) — the active skin |
@@ -391,24 +350,11 @@ Send an array; the whole batch is applied atomically. Ids are names as in Spine:
 | `updateBoundingBox` | `id` (a `boundingBoxes` entry), `color?` (null: Spine's default), `vertices?` (new polygon, setup world space; its deform keys are dropped when the vertex count changes), `weights?` (per vertex; default: each vertex takes the nearest old vertex's weights) |
 | `updateClipping` | `id` (a `clippings` entry), `end?` (slot; null: to the end of the draw order), `convex?`, `inverse?` |
 | `addBoneChain` | `id`, `parent?` (root), world `start`, `end`, `count` — creates `<id>_1 .. <id>_<count>` |
-| `addPhysics` | `id`, `bones`, `frequency?`, `damping?`, `gravity?`, `inertia?`, `mix?`, `limit?` |
-| `updatePhysics` / `removePhysics` | `id` + any addPhysics field / `id` |
-| `addParameter` / `updateParameter` / `removeParameter` | `id`, `min`, `max`, `default?` / `id` + any of those; both take `name?` / `group?` (display; null clears on update), `decimals?` (0..10), `repeat?` / `id` |
-| `renameParameter` | `id`, `to` — renames it everywhere: keyform grids, animation tracks, physics, combos, Live2D groups |
-| `setParamBoneKeys` | `parameter`, `bone`, `channel` (`rotate`/`translate`/`scale`), `keys` [{`at`, `v`}], `mode?` (`merge` default) |
-| `setParamSlotKeys` | `parameter`, `slot`, `channel` (`color`/`attachment`), `keys`, `mode?` |
-| `setParamShape` | `parameter`, `attachment`, `keys` [{`at`, `offsets?`, `transform?`}] — `transform`: `{scale, rotate, translate, pivot?, falloff?: {center?, radius}, only?}` applied to the mesh's setup vertices (e.g. close an eye: `{"scale": [1, 0.1]}`) |
-| `addWarp` / `updateWarp` / `removeWarp` | `id`, `targets`, `rect?` (default: target bounds + `padding` 0.1), `cols?` 4, `rows?` 4 / `id`, `targets` / `id` |
-| `setParamWarp` | `parameter`, `warp`, `keys` [{`at`, `preset?` + `amount?`, `presets?` [...], `offsets?`, `transform?`}] — presets: `turnX`, `turnY` (amount = bulge as a fraction of width/height, e.g. 0.12), `shearX`, `shearY`, `scale`, `scaleX`, `scaleY` (factor - 1), `translateX`, `translateY` (units) |
-| `clearParamKeys` | `parameter`, optional `bone`, `slot`, `attachment` or `warp` |
-| `addCombo` | `id`, `params`: 2-3 parameter ids — a combination keyform grid (see combos) |
-| `setComboKey` | `combo`, `at`: one value per parameter, any of `bones` {bone: {rotate?, translate?, scale?}}, `meshes` {attachment: {offsets?, transform?}} (as setParamShape), `warps` {warp: {preset?+amount?, presets?, offsets?, transform?}} (as setParamWarp); `mode` merge (default: replaces only the given targets) / replace |
-| `removeComboKey` | `combo`, `at` |
-| `removeCombo` | `id` |
+| `addParameter` / `updateParameter` / `removeParameter` | `id`, `min`, `max`, `default?` / `id` + any of those; both take `name?` / `group?` (display; null clears on update), `decimals?` (0..10), `repeat?`; `updateParameter` also `combined?` / `id` |
+| `renameParameter` | `id`, `to` — renames it everywhere: keyform grids, animation tracks, physics, Live2D groups |
 | `setParamTrack` | `animation`, `parameter`, `keys` [{`t`, `v`, `ease?`}], `mode?` — the parameter's value over time |
-| `setPhysicsKeys` | `animation`, `physics`, `channel` (`mix`/`force`), `keys`, `mode?` |
 | `setMeta` | `name?`, `meta?` |
-| `setTarget` | `target` spine/live2d — gives an older model a target (refused, with the reason, while it holds the other kind's features); to live2d, meshes become art meshes |
+| `setTarget` | `target` spine/live2d — changes the kind of a model with only art (refused, with the reason, while it holds the other kind's features); to live2d, meshes become art meshes |
 
 `shape` for `addMesh` (world coordinates, setup pose):
 - `{ "rect": { "x", "y", "width", "height" }, "cols": 6, "rows": 1 }` — `x,y` is the bottom-left corner. Use several
@@ -454,28 +400,42 @@ sequences (the first image is shown).
 Data), plus the event sounds from `audio/` next to the model into `audio/`. Constraints go out as Spine 4.3's `constraints` array (per-kind arrays with `order` for older versions;
 sliders need 4.3), skins with their attachments, bones and constraints. Anything unchanged since import is written
 exactly as it came; edited meshes are converted to bone-local /
-weighted vertices with the hull first, eases to absolute bezier handles, deforms to per-bone deltas. Parameters,
-warps, combos (Live2D side), spring bones and slot clip masks have no Spine equivalent and are reported.
+weighted vertices with the hull first, eases to absolute bezier handles, deforms to per-bone deltas. Parameters
+(Live2D side) and slot clip masks have no Spine equivalent and are reported.
+
+Spine's tree folders (skins, animations, events, constraints and draw-order slots) are part of the name: `/`
+separates them (`accessories/bag`, `hat/feathers-back`), in the Spine JSON and here alike. Moving an item into a
+folder is a rename (`renameSkin`, `renameAnimation`, `renameEvent`, `renameConstraint`, `renameSlot`); an empty folder
+cannot be stored.
 
 ## Live2D interop
 
-`rig live2d-import <name.model3.json> <model.rig.json>` (MCP `rig_live2d_import`, editor File › Import Live2D) reads a
-Cubism runtime model: the .moc3 (Cubism 3.0-5.0 formats) with its textures, motions (motion3), physics (physics3),
-pose groups (pose3), display names (cdi3), groups and hit areas (model3). Checked against the official Cubism Core
-and Framework: vertices within 0.02 px, opacities, colors and draw order identical; motion curves (linear, both bezier
-interpretations, stepped, inverse stepped, the loop's closing frame), physics and pose fades match frame by frame at
-60 fps. Textures are copied to `images/` next to the model. A bare .moc3 imports without motions and physics.
+`rig live2d-import <name.cmo3> <model.rig.json>` (MCP `rig_live2d_import`, editor File › Import Live2D) reads a
+Cubism Editor model (.cmo3): parameters (display names, groups, blend shapes), the parts tree, warp and rotation
+deformers, art meshes (mesh, UVs, keyforms, colors, masks, blend modes), glue, draw-order groups, physics, and the
+editor's state: display names of art meshes and deformers (`name`), hidden and locked objects, part label colors,
+deformation paths (`live2d.paths`).
+The texture pages are the atlases the editor last rendered (saved inside the .cmo3), written to `images/<model>/`
+next to the model. Hidden objects, which a runtime export leaves out, are kept with their flag. Checked against the
+runtime exports of the same files: identical structure (grids, forms, ids, order) and poses within 0.002 px of the
+Cubism Core.
 
-Kept for export but not evaluated: expressions (exp3), "Model" motion curves (eye blink / lip sync / model opacity),
-per-motion fade times, user data. Blend-shape parameters (Cubism 4.2+ "blend shapes") are not supported yet.
+Motions come from the Cubism animation files (.can3; `--motions a.can3,b.can3`, MCP `motions`, or by default every
+.can3 next to the .cmo3): each scene becomes an animation, its parameter and part-opacity curves read as the runtime
+export writes them (bezier handles as stored, cut to the scene's work area, the last value held to its end) and then
+played like motion3. Checked against runtime exports: identical curves to the file's 3-decimal rounding. Curves for
+parameters or parts the model no longer has are left out (reported); eye blink / lip sync tracks are not read.
+
+Runtime exports (.model3.json / .moc3) are not imported: they have lost the editor's names, hidden objects and
+groups. Not read yet: pose groups (pose3 is made in the Cubism Viewer; alternative parts, such as two arm sets, all
+show until one is hidden), expressions (exp3), extended interpolation (the plain keyforms are used), art paths.
 
 `rig live2d-export <model.rig.json> <outDir>` (MCP `rig_live2d_export`, editor File › Export to Live2D) writes
 `<name>.model3.json`, `.moc3` (the source file's format version, raised when colors or bilinear warps need it),
 `.physics3.json`, `.cdi3.json`, `.pose3.json`, `motion/*.motion3.json` and `<name>.textures/` for Cubism SDKs and
 viewers (the Cubism Editor itself only opens its .cmo3 projects). An unedited import exports a rig that the Cubism
-Core evaluates identically. Meshes without Live2D keyforms become static art meshes; bones, spring bones, Awaken2D
-parameter effects (bone keys, blend shapes, warps, combos) and bone / slot / deform timelines have no Live2D
-counterpart and are reported. `rig spine-export` of a Live2D model crops each mesh's part of the texture pages
+Core evaluates identically. Meshes without Live2D keyforms become static art meshes; bones and bone / slot / deform
+timelines have no Live2D counterpart and are reported. `rig spine-export` of a Live2D model crops each mesh's part of the texture pages
 (parameters and Live2D motions are not exported to Spine).
 
 ## Importing layered art
@@ -508,8 +468,9 @@ say which role each layer got and why; `--mesh-role NAME=rigid|standard|flexible
 `--mesh-density K` scales every budget, and `rig remesh --plan` (editor: Mesh mode › Auto…, Live2D generator preset
 "Automatic") redoes one mesh. `--mesh grid` (or `--spacing PX`) gives the older grid mesh instead: cells of
 `spacing` px containing solid pixels.
-Pixels map to world as `x = (px - originX) * scale`, `y = (originY - py) * scale`; the default origin is the
-bottom-center of the visible art, so the character stands on y = 0.
+Pixels map to world as `x = (px - originX) * scale`, `y = (originY - py) * scale`. For Live2D imports the default
+origin is the canvas center; for Spine imports it is the bottom-center of the visible art, so the character stands
+on y = 0. An explicit `--origin` (MCP `origin`) overrides the default.
 
 Everything starts bound to `root`. `rig propose` / MCP `rig_propose_bones` then suggests a skeleton:
 - roles from layer names (then group names), English or Korean: head/머리/얼굴, torso/body/몸, hip/pelvis/골반,
@@ -521,14 +482,15 @@ Everything starts bound to `root`. `rig propose` / MCP `rig_propose_bones` then 
   nearest bone; compact unknown layers ride on the nearest bone
 - with `ik` (`--ik`, MCP `ik: true`): two-bone IK on every arm and leg, targets at wrists/ankles, joints bending
   outward, and feet re-parented to their leg target so they stay level
-- with `physics` (`--physics`, MCP `physics: true`; models without a target only): tails and other dangling
-  elongated layers become 3-bone chains with a spring (2.5 Hz, damping 0.35, limit 60°, no gravity until you add it)
+- with `physics` (`--physics`, MCP `physics: true`): tails and other dangling elongated layers become 3-bone
+  chains, each bone with a Spine physics constraint (rotate 1, Spine's default settings, no gravity until you add it
+  with `updateConstraint`)
 The result is a list of ordinary ops plus a report. Review it (render with `bones,names` overlays) and fix names,
 parents or positions with `updateBone`, `updateSlot`, `autoWeight` as needed.
 
 ## Workflow for agents
 
-0. Decide (ask the user when unsure) whether the model is for **Spine2D** or **Live2D**: `rig_new` / `rig_import` need
+0. Decide (ask the user when unsure) whether the model is for **Spine** or **Live2D**: `rig_new` / `rig_import` need
    `target`. Steps 1-7 are the Spine workflow; for Live2D: import the layers with `target: "live2d"`, `addParameter`,
    `addDeformer` (warps over faces / hair, rotation deformers for limbs) with `children`, `setKeyformKeys` +
    `setKeyform` for each keyed shape, `setParamTrack` for motion, then `rig_live2d_export`.
@@ -541,5 +503,5 @@ parents or positions with `updateBone`, `updateSlot`, `autoWeight` as needed.
    positions) and move the hip; knees and elbows follow. Feet stay planted unless their target moves.
 6. Faces: bones for the face parts (eyes, mouth, brows) weighted on a dense head mesh, deform keys
    (`setDeformKeys`) for shapes like blinks, attachment keys (`setSlotKeys` channel `attachment`) for swaps.
-7. Secondary motion (hair, tails, ears, ribbons): short bone chains with offset rotation keys (overlapping action).
-   (Spring bones, Awaken2D parameters, warps and combos exist only for models without a target: neither export has them.)
+7. Secondary motion (hair, tails, ears, ribbons): short bone chains with offset rotation keys (overlapping action),
+   or Spine physics constraints on them (`setConstraint` kind `physics`, or `--physics` when proposing) to let them sway.

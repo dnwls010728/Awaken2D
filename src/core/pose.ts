@@ -5,7 +5,7 @@ export const spineCurves = (model: Model) => model.target === "spine";
 import { applyIkConstraints } from "./ik.ts";
 import { live2dFrame, partOpacities } from "./live2d.ts";
 import { poseParts, settledPose } from "./live2dpose.ts";
-import { paramBoneOffsets, paramSlotEffects, paramValues, restVertices } from "./params.ts";
+import { paramValues, restVertices } from "./params.ts";
 import type { ParamValues } from "./params.ts";
 import { IDENTITY, apply, fromTRS, invert, lerp, mul, parseColor } from "./math.ts";
 import { SpineState, needsSpineUpdate, spineUpdate } from "./spine.ts";
@@ -157,8 +157,6 @@ export function computePose(model: Model, animation: string | null = null, time 
   const order = boneOrder(model);
   const src = new Map(model.bones.map((b) => [b.id, b]));
   const values = opts.params ? paramValues(model, anim, t, opts.params) : undefined;
-  const boneParams = values ? paramBoneOffsets(model, values) : undefined;
-  const slotParams = values && !opts.bonesOnly ? paramSlotEffects(model, values) : undefined;
   const byId = new Map<string, BonePose>();
   const bones: BonePose[] = [];
   for (const id of order) {
@@ -176,15 +174,14 @@ export function computePose(model: Model, animation: string | null = null, time 
       if (tl.shearX || tl.shearY || sh) sh = [axis(tl.shearX, sh?.[0] ?? 0), axis(tl.shearY, sh?.[1] ?? 0)];
     }
     const inherit = tl?.inherit?.length ? sampleTrack(tl.inherit, t, stepAny, spineCurves(model))! : (b.inherit ?? "normal");
-    const po = boneParams?.get(id);
     const p: BonePose = {
       id,
       parent: b.parent,
-      x: b.x + tr[0] + (po?.translate[0] ?? 0),
-      y: b.y + tr[1] + (po?.translate[1] ?? 0),
-      rotation: b.rotation + rot + (po?.rotate ?? 0),
-      scaleX: b.scaleX * sc[0] * (po?.scale[0] ?? 1),
-      scaleY: b.scaleY * sc[1] * (po?.scale[1] ?? 1),
+      x: b.x + tr[0],
+      y: b.y + tr[1],
+      rotation: b.rotation + rot,
+      scaleX: b.scaleX * sc[0],
+      scaleY: b.scaleY * sc[1],
       length: b.length,
       world: IDENTITY,
     };
@@ -208,10 +205,6 @@ export function computePose(model: Model, animation: string | null = null, time 
       const keys = tl.color.map((k) => ({ ...k, v: parseColor(k.v) }));
       color = sampleTrack(keys, t, mixColor, spineCurves(model))!;
     }
-    // parameters tint on top and switch attachments unless the animation keys the attachment itself
-    const pe = slotParams?.get(s.id);
-    if (pe?.color) color = color.map((v, i) => v * pe.color![i]) as RGBA;
-    const base = pe && pe.attachment !== undefined ? pe.attachment : s.attachment;
     let dark: RGB | undefined;
     if (s.dark || tl?.dark?.length) {
       const d = tl?.dark?.length ? sampleTrack(tl.dark.map((k) => ({ ...k, v: parseColor(k.v) })), t, mixColor, spineCurves(model))! : parseColor(s.dark!);
@@ -220,7 +213,7 @@ export function computePose(model: Model, animation: string | null = null, time 
     return {
       id: s.id,
       bone: s.bone,
-      attachment: resolveAttachment(model, s.id, att !== undefined ? att : base),
+      attachment: resolveAttachment(model, s.id, att !== undefined ? att : s.attachment),
       color,
       blend: s.blend ?? "normal",
       ...(s.clip ? { clip: s.clip } : {}),
@@ -585,7 +578,7 @@ function localDeform(keys: DeformKey[], att: MeshAttachment, t: number): Float64
 }
 
 /**
- * Setup-space vertices of an attachment for a pose, before skinning (blend shapes and warps from parameters,
+ * Setup-space vertices of an attachment for a pose, before skinning (Live2D keyforms and deformers from parameters,
  * plus the animation's deform keys), and Spine-exact per-influence deform deltas when the track has them.
  */
 export function poseDeform(model: Model, pose: Pose, attachmentId: string, att: MeshAttachment): { rest: Vec2[]; local: Float64Array | null } {

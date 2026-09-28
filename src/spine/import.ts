@@ -277,10 +277,12 @@ export function importSpineData(json: Json, opts: SpineImportOptions): SpineImpo
       ...(b.shearX ? { shearX: b.shearX } : {}),
       ...(b.shearY ? { shearY: b.shearY } : {}),
       length: b.length ?? 0,
+      ...(b.color ? { color: hex(b.color) } : {}),
+      ...(b.icon ? { icon: String(b.icon) } : {}),
       ...(inheritOf(b.inherit ?? b.transform) !== "normal" ? { inherit: inheritOf(b.inherit ?? b.transform) } : {}),
       ...(b.skin ? { skin: true } : {}),
     });
-    const extra = pick(b, ["name", "parent", "x", "y", "rotation", "scaleX", "scaleY", "shearX", "shearY", "length", "inherit", "transform", "skin"]);
+    const extra = pick(b, ["name", "parent", "x", "y", "rotation", "scaleX", "scaleY", "shearX", "shearY", "length", "color", "icon", "inherit", "transform", "skin"]);
     if (Object.keys(extra).length) meta.bones[b.name] = extra;
   }
   if (json.skeleton?.referenceScale !== undefined) model.referenceScale = json.skeleton.referenceScale;

@@ -6,7 +6,7 @@ import type { Animation, Ease, Key, Model, Op, Pose, Vec2 } from "../src/core/in
 import { colorSwatch } from "./colorpicker.ts";
 import { t as tr } from "./i18n.ts";
 
-type Kind = "bone" | "slot" | "ik" | "physics" | "param" | "part" | "deform" | "event" | "drawOrder" | "constraint";
+type Kind = "bone" | "slot" | "ik" | "param" | "part" | "deform" | "event" | "drawOrder" | "constraint";
 type ValueType = "number" | "vec" | "color" | "attachment" | "bool" | "deform" | "event" | "drawOrder" | "inherit" | "marker";
 
 /** Spine constraint timelines: the animation field and the channels of each kind (tracks target "<kind>:<id>"). */
@@ -62,7 +62,6 @@ const KIND_COLOR: Record<Kind, string> = {
   bone: "#4ea1ff",
   slot: "#3fb96c",
   ik: "#e04ab8",
-  physics: "#e0a43a",
   param: "#a371f7",
   part: "#e3b341",
   deform: "#26b5b5",
@@ -134,8 +133,8 @@ export class Timeline {
 
   private buildTracks(model: Model, anim: Animation): Track[] {
     const tracks: Track[] = [];
-    // Spine models have no parameter / part / spring tracks, Live2D models no bone / slot / IK / physics / deform / draw-order tracks
-    const hidden = new Set<Kind>(model.target === "spine" ? ["param", "part", "physics"] : model.target === "live2d" ? ["bone", "slot", "ik", "physics", "deform", "drawOrder"] : []);
+    // Spine models have no parameter / part tracks, Live2D models no bone / slot / IK / deform / draw-order / constraint tracks
+    const hidden = new Set<Kind>(model.target === "spine" ? ["param", "part"] : ["bone", "slot", "ik", "deform", "drawOrder", "constraint"]);
     const push = (kind: Kind, target: string, channel: string, valueType: ValueType, keys: Key<unknown>[] | undefined) =>
       hidden.has(kind) ||
       tracks.push({ id: `${kind}:${target}:${channel}`, kind, target, channel, label: channel, valueType, keys: keys ?? [] });
@@ -200,10 +199,6 @@ export class Timeline {
           } else if ((keys as Key<unknown>[] | undefined)?.length) push("constraint", `${kind}:${id}`, ch, "number", keys as Key<unknown>[]);
         }
       }
-    }
-    for (const [ph, tl] of Object.entries(anim.physics ?? {})) {
-      if (tl.mix?.length) push("physics", ph, "mix", "number", tl.mix);
-      if (tl.force?.length) push("physics", ph, "force", "vec", tl.force);
     }
     for (const [att, keys] of Object.entries(anim.deform ?? {})) if (keys.length) push("deform", att, "deform", "deform", keys as Key<unknown>[]);
     if (anim.drawOrder?.length) push("drawOrder", "draw order", "order", "drawOrder", anim.drawOrder.map((k) => ({ t: k.t, v: k.offsets })));
@@ -278,7 +273,7 @@ export class Timeline {
       return { op: "setConstraintKeys", animation, kind: track.target.slice(0, i), constraint: track.target.slice(i + 1), channel: track.channel, keys, mode: "replace" } as Op;
     }
     if (!sorted.length) {
-      const which = { bone: { bone: track.target }, slot: { slot: track.target }, ik: { ik: track.target }, physics: { physics: track.target }, param: { param: track.target } }[track.kind as "bone"];
+      const which = { bone: { bone: track.target }, slot: { slot: track.target }, ik: { ik: track.target }, param: { param: track.target } }[track.kind as "bone"];
       return { op: "clearKeys", animation, ...which, ...(track.kind === "param" ? {} : { channel: track.channel }) } as Op;
     }
     switch (track.kind) {
@@ -288,8 +283,6 @@ export class Timeline {
         return { op: "setSlotKeys", animation, slot: track.target, channel: track.channel, keys: sorted, mode: "replace" } as Op;
       case "ik":
         return { op: "setIkKeys", animation, ik: track.target, channel: track.channel, keys: sorted, mode: "replace" } as Op;
-      case "physics":
-        return { op: "setPhysicsKeys", animation, physics: track.target, channel: track.channel, keys: sorted, mode: "replace" } as Op;
       default:
         return { op: "setParamTrack", animation, parameter: track.target, keys: sorted, mode: "replace" } as Op;
     }

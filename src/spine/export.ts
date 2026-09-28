@@ -133,8 +133,7 @@ export function exportSpineData(input: Model, opts: SpineExportOptions): SpineEx
   const bonesUnchanged = (bones: string[]) =>
     !!meta && bones.every((b) => meta.setupWorld?.[b] && worldOf(b).every((v, i) => Math.abs(v - meta.setupWorld[b][i]) < 1e-4));
 
-  if (model.parameters?.length || model.warps?.length || model.combos?.length) warnings.push("parameters, warps and combos are Live2D-side features with no Spine equivalent: not exported");
-  if (model.physics?.length) warnings.push("spring bones (physics) are not exported; Spine 4.2 physics constraints work differently");
+  if (model.parameters?.length) warnings.push("parameters are Live2D features with no Spine equivalent: not exported");
   if (model.slots.some((s) => s.clip)) warnings.push("slot clip masks are not exported (Spine uses clipping attachments)");
 
   // ---- skeleton header, bones, slots
@@ -171,7 +170,12 @@ export function exportSpineData(input: Model, opts: SpineExportOptions): SpineEx
       if (b.shearY) o.shearY = r5(b.shearY);
       if (b.inherit && b.inherit !== "normal") o.inherit = b.inherit;
       if (b.skin) o.skin = true;
-      return { ...o, ...(meta?.bones?.[id] ?? {}) };
+      const out = { ...o, ...(meta?.bones?.[id] ?? {}) };
+      if (b.color) out.color = hex8(b.color);
+      else delete out.color;
+      if (b.icon) out.icon = b.icon;
+      else delete out.icon;
+      return out;
     }),
   };
 
@@ -188,9 +192,6 @@ export function exportSpineData(input: Model, opts: SpineExportOptions): SpineEx
   for (const s of model.slots) use(s.id, s.attachment);
   for (const a of Object.values(model.animations ?? {})) {
     for (const [slot, tl] of Object.entries(a.slots ?? {})) for (const k of tl.attachment ?? []) use(slot, k.v);
-  }
-  for (const p of model.parameters ?? []) {
-    for (const [slot, tl] of Object.entries(p.slots ?? {})) for (const k of tl.attachment ?? []) use(slot, k.v);
   }
   for (const [id, m] of Object.entries(meta?.attachments ?? {})) if (!m.skin && !inSkin.has(id)) use(m.slot, id);
 

@@ -5,7 +5,9 @@
 import { gridBlend, gridSize, live2dFrame, live2dMeshes, rotationPoint, turnAt, warpPoint } from "./live2d.ts";
 import type { Live2DDeformerState, Live2DFrame, RotationState } from "./live2d.ts";
 import type { ParamValues } from "./params.ts";
+import { checkPaths, remapPaths } from "./live2dpath.ts";
 import type {
+  Live2DPath,
   Deformer,
   Key,
   KeyformGrid,
@@ -65,11 +67,21 @@ export type Live2DOp =
       /** Art meshes (attachment ids) and deformers to move under the new deformer (their look is kept). */
       children?: string[];
     }
-  | { op: "updateDeformer"; id: string; parent?: string | null; part?: string | null; bilinear?: boolean; hidden?: boolean; disabled?: boolean }
+  | { op: "updateDeformer"; id: string; parent?: string | null; part?: string | null; bilinear?: boolean; hidden?: boolean; disabled?: boolean; locked?: boolean }
   | { op: "removeDeformer"; id: string }
-  | { op: "setLive2DMesh"; attachment: string; deformer?: string | null; part?: string | null; hidden?: boolean; disabled?: boolean }
+  | {
+      op: "setLive2DMesh";
+      attachment: string;
+      deformer?: string | null;
+      part?: string | null;
+      hidden?: boolean;
+      disabled?: boolean;
+      locked?: boolean;
+      /** Deformation paths (replaced; null or [] removes them). */
+      paths?: Live2DPath[] | null;
+    }
   | { op: "addPart"; id: string; parent?: string | null; name?: string; visible?: boolean }
-  | { op: "updatePart"; id: string; parent?: string | null; name?: string; visible?: boolean; disabled?: boolean }
+  | { op: "updatePart"; id: string; parent?: string | null; name?: string; visible?: boolean; disabled?: boolean; locked?: boolean; label?: string | null }
   | { op: "removePart"; id: string }
   | {
       op: "enableLive2D";
@@ -393,15 +405,63 @@ function reparentRotation(m: Model, d: RotationDeformer, to: string | null): voi
   });
 }
 
+/**
+ * Blend-shape differences in a new parent's space: each difference is re-expressed around the object's first keyform
+ * (exact where the parents map linearly, a close approximation inside a warp's cells).
+ */
+function reparentBlendPoints(m: Model, grid: KeyformGrid, forms: Array<{ points: number[] }>, shapes: Array<{ forms: Array<{ points: number[] }> }> | undefined, from: string | null, to: string | null): void {
+  const ref = forms[0]?.points;
+  if (!shapes?.length || !ref) return;
+  const frame = frameAt(m, gridPointValues(m, grid, 0));
+  const map = (pts: number[]) => {
+    const out: number[] = [];
+    for (let i = 0; i + 1 < pts.length; i += 2) {
+      const c = forwardPoint(m, frame, from, pts[i], pts[i + 1]);
+      out.push(...inversePoint(m, frame, to, c[0], c[1]));
+    }
+    return out;
+  };
+  const base = map(ref);
+  for (const s of shapes) {
+    for (const f of s.forms) {
+      const moved = map(ref.map((x, i) => x + (f.points[i] ?? 0)));
+      f.points = moved.map((x, i) => r7(x - base[i]));
+    }
+  }
+}
+
 function reparentNode(m: Model, node: Node, to: string | null): void {
   if (node.kind === "mesh") {
     const att = ownMesh(m, node.id);
+    reparentBlendPoints(m, att.live2d.grid, att.live2d.forms, att.live2d.blendShapes, att.live2d.deformer, to);
     reparentPoints(m, att.live2d.grid, att.live2d.forms, att.live2d.deformer, to);
     att.live2d.deformer = to;
   } else if (node.kind === "deformer") {
     const d = m.live2d!.deformers.find((x) => x.id === node.id)!;
-    if (d.type === "warp") reparentPoints(m, d.grid, d.forms, d.parent, to);
-    else reparentRotation(m, d, to);
+    if (d.type === "warp") {
+      reparentBlendPoints(m, d.grid, d.forms, d.blendShapes, d.parent, to);
+      reparentPoints(m, d.grid, d.forms, d.parent, to);
+    } else {
+      // rotation: origin differences move with the parent mapping around the first keyform's origin; angle and
+      // scale differences stay (they add to the deformer's own values)
+      const f0 = d.forms[0];
+      if (d.blendShapes?.length && f0) {
+        const frame = frameAt(m, gridPointValues(m, d.grid, 0));
+        const map = (x: number, y: number) => {
+          const c = forwardPoint(m, frame, d.parent, x, y);
+          return inversePoint(m, frame, to, c[0], c[1]);
+        };
+        const o = map(f0.x, f0.y);
+        for (const s of d.blendShapes) {
+          for (const f of s.forms) {
+            const q = map(f0.x + f.x, f0.y + f.y);
+            f.x = r7(q[0] - o[0]);
+            f.y = r7(q[1] - o[1]);
+          }
+        }
+      }
+      reparentRotation(m, d, to);
+    }
     d.parent = to;
   }
 }
@@ -445,6 +505,12 @@ export function removeLive2DVertices(att: MeshAttachment, removed: number[]): Me
   const gone = new Set(removed);
   const l = structuredClone(att.live2d);
   for (const f of l.forms) f.points = f.points.filter((_, k) => !gone.has(k >> 1));
+  for (const s of l.blendShapes ?? []) for (const f of s.forms) f.points = f.points.filter((_, k) => !gone.has(k >> 1));
+  const map: number[] = [];
+  for (let i = 0, j = 0; i < att.vertices.length; i++) map.push(gone.has(i) ? -1 : j++);
+  const paths = remapPaths(l.paths, map);
+  if (paths) l.paths = paths;
+  else delete l.paths;
   return { ...att, live2d: l };
 }
 
@@ -498,12 +564,48 @@ export function remapLive2DForms(old: MeshAttachment, next: MeshAttachment): Mes
     return best;
   });
   const l = structuredClone(old.live2d);
-  for (const f of l.forms) {
+  // keyforms and blend-shape differences alike: each new vertex blends the old triangle's vertices
+  for (const f of [...l.forms, ...(l.blendShapes ?? []).flatMap((s) => s.forms)]) {
     const pts = f.points;
     f.points = weights.flatMap(({ tri, w }) => [
-      r7(pts[tri[0] * 2] * w[0] + pts[tri[1] * 2] * w[1] + pts[tri[2] * 2] * w[2]),
-      r7(pts[tri[0] * 2 + 1] * w[0] + pts[tri[1] * 2 + 1] * w[1] + pts[tri[2] * 2 + 1] * w[2]),
+      r7((pts[tri[0] * 2] ?? 0) * w[0] + (pts[tri[1] * 2] ?? 0) * w[1] + (pts[tri[2] * 2] ?? 0) * w[2]),
+      r7((pts[tri[0] * 2 + 1] ?? 0) * w[0] + (pts[tri[1] * 2 + 1] ?? 0) * w[1] + (pts[tri[2] * 2 + 1] ?? 0) * w[2]),
     ]);
+  }
+  // deformation paths: control points re-pinned where they were (setup positions), bound vertices kept where a new
+  // vertex sits on the old one
+  if (l.paths?.length) {
+    const paths: Live2DPath[] = [];
+    for (const p of l.paths) {
+      const points: Live2DPath["points"] = [];
+      for (const q of p.points) {
+        const at: Vec2 = [0, 0];
+        for (let k = 0; k < 3; k++) {
+          const v = old.vertices[q.tri[k]] ?? [0, 0];
+          at[0] += v[0] * q.w[k];
+          at[1] += v[1] * q.w[k];
+        }
+        let best: { tri: [number, number, number]; w: [number, number, number]; out: number } | null = null;
+        for (const t of next.triangles) {
+          const w = barycentric(at, next.vertices[t[0]], next.vertices[t[1]], next.vertices[t[2]]);
+          if (!w) continue;
+          const out = Math.max(0, -w[0], -w[1], -w[2]);
+          if (!best || out < best.out) best = { tri: [t[0], t[1], t[2]], w, out };
+        }
+        if (!best || best.out > 0.5) break;
+        points.push({ tri: best.tri, w: best.w.map((x) => r7(x)) as [number, number, number], ...(q.corner ? { corner: true } : {}) });
+      }
+      if (points.length !== p.points.length) continue;
+      const same = (a: Vec2, b: Vec2) => Math.abs(a[0] - b[0]) < 1e-4 && Math.abs(a[1] - b[1]) < 1e-4;
+      const bind = p.bind.flatMap((b) => {
+        const v = old.vertices[b.vertex];
+        const j = v ? next.vertices.findIndex((w) => same(v, w)) : -1;
+        return j >= 0 ? [{ ...b, vertex: j }] : [];
+      });
+      paths.push({ ...p, points, bind });
+    }
+    if (paths.length) l.paths = paths;
+    else delete l.paths;
   }
   return { ...next, live2d: l };
 }
@@ -690,6 +792,7 @@ export function applyLive2DOp(m: Model, op: Live2DOp): string {
       const node = findNode(m, op.target);
       const p = (m.parameters ?? []).find((x) => x.id === op.param);
       if (!p) throw new Error(`unknown parameter "${op.param}"`);
+      if (p.blendShape) throw new Error(`"${op.param}" is a blend-shape parameter: objects add keyed differences on it (blendShapes), not keyforms`);
       let keys: number[] | null = null;
       if (op.keys !== null) {
         if (!Array.isArray(op.keys) || !op.keys.length || !op.keys.every((k) => typeof k === "number" && Number.isFinite(k))) throw new Error("keys must be a non-empty list of numbers (or null to unbind)");
@@ -832,6 +935,7 @@ export function applyLive2DOp(m: Model, op: Live2DOp): string {
       if (op.bilinear !== undefined && d.type === "warp") op.bilinear ? (d.bilinear = true) : delete d.bilinear;
       if (op.hidden !== undefined) op.hidden ? (d.hidden = true) : delete d.hidden;
       if (op.disabled !== undefined) op.disabled ? (d.disabled = true) : delete d.disabled;
+      if (op.locked !== undefined) op.locked ? (d.locked = true) : delete d.locked;
       if (op.parent !== undefined && op.parent !== d.parent) {
         if (op.parent !== null && !rig.deformers.some((x) => x.id === op.parent)) throw new Error(`unknown deformer "${op.parent}"`);
         if (op.parent === d.id || (op.parent && descendsFrom(m, op.parent, d.id))) throw new Error("a deformer cannot go under itself or its descendants");
@@ -867,6 +971,13 @@ export function applyLive2DOp(m: Model, op: Live2DOp): string {
       }
       if (op.hidden !== undefined) op.hidden ? (att.live2d.hidden = true) : delete att.live2d.hidden;
       if (op.disabled !== undefined) op.disabled ? (att.live2d.disabled = true) : delete att.live2d.disabled;
+      if (op.locked !== undefined) op.locked ? (att.live2d.locked = true) : delete att.live2d.locked;
+      if (op.paths !== undefined) {
+        if (op.paths?.length) {
+          checkPaths(op.paths, att.vertices.length);
+          att.live2d.paths = structuredClone(op.paths);
+        } else delete att.live2d.paths;
+      }
       if (op.deformer !== undefined && op.deformer !== att.live2d.deformer) {
         if (op.deformer !== null && !rig.deformers.some((x) => x.id === op.deformer)) throw new Error(`unknown deformer "${op.deformer}"`);
         reparentNode(m, { kind: "mesh", id: op.attachment, att }, op.deformer);
@@ -898,6 +1009,11 @@ export function applyLive2DOp(m: Model, op: Live2DOp): string {
       if (op.name !== undefined) op.name ? (p.name = op.name) : delete p.name;
       if (op.visible !== undefined) op.visible ? delete p.visible : (p.visible = false);
       if (op.disabled !== undefined) op.disabled ? (p.disabled = true) : delete p.disabled;
+      if (op.locked !== undefined) op.locked ? (p.locked = true) : delete p.locked;
+      if (op.label !== undefined) {
+        if (op.label !== null && !/^#[0-9a-fA-F]{6}$/.test(op.label)) throw new Error('label must be "#rrggbb" or null');
+        op.label ? (p.label = op.label.toLowerCase()) : delete p.label;
+      }
       return `updated part ${op.id}`;
     }
 
@@ -908,6 +1024,7 @@ export function applyLive2DOp(m: Model, op: Live2DOp): string {
       for (const x of rig.parts) if (x.parent === p.id) x.parent = p.parent;
       for (const d of rig.deformers) if (d.part === p.id) d.part = p.parent;
       for (const [id, att] of live2dMeshes(m)) if (att.live2d.part === p.id) ownMesh(m, id).live2d.part = p.parent;
+      for (const g of rig.glue ?? []) if (g.part === p.id) g.part = p.parent;
       rig.parts = rig.parts.filter((x) => x.id !== p.id);
       if (rig.drawOrderGroups) {
         for (const g of rig.drawOrderGroups) g.items = g.items.filter((it) => !("part" in it && it.part === p.id));
@@ -1015,6 +1132,37 @@ export function renameLive2DParam(m: Model, from: string, to: string | null): vo
       a.live2d.forms = resample(m, a.live2d.grid, a.live2d.forms, g2, blendMeshForms(a.live2d.forms));
       a.live2d.grid = g2;
     });
+  }
+  // blend shapes on it (removed: dropped) and constraints that read it (removed: no limit)
+  const uses = (list?: Array<{ param: string; constraints?: Array<{ param: string }> }>) => !!list?.some((s) => s.param === from || s.constraints?.some((c) => c.param === from));
+  const fixShapes = <T extends { param: string; constraints?: Array<{ param: string; values: Array<[number, number]> }> }>(list: T[]): T[] | undefined => {
+    const out = list.filter((s) => to !== null || s.param !== from);
+    for (const s of out) {
+      if (s.param === from) s.param = to!;
+      if (s.constraints) {
+        s.constraints = s.constraints.filter((c) => to !== null || c.param !== from);
+        for (const c of s.constraints) if (c.param === from) c.param = to!;
+        if (!s.constraints.length) delete s.constraints;
+      }
+    }
+    return out.length ? out : undefined;
+  };
+  const rigUses = !!m.live2d && [...m.live2d.deformers, ...m.live2d.parts, ...(m.live2d.glue ?? [])].some((o) => uses(o.blendShapes as Array<{ param: string }> | undefined));
+  if (rigUses) {
+    const rig = ownRig(m);
+    for (const o of [...rig.deformers, ...rig.parts, ...(rig.glue ?? [])] as Array<{ blendShapes?: Array<{ param: string; constraints?: Array<{ param: string; values: Array<[number, number]> }> }> }>) {
+      if (!o.blendShapes) continue;
+      const next = fixShapes(o.blendShapes);
+      if (next) o.blendShapes = next;
+      else delete o.blendShapes;
+    }
+  }
+  for (const [id, att] of live2dMeshes(m)) {
+    if (!uses(att.live2d.blendShapes)) continue;
+    const a = ownMesh(m, id);
+    const next = fixShapes(a.live2d.blendShapes!);
+    if (next) a.live2d.blendShapes = next;
+    else delete a.live2d.blendShapes;
   }
 }
 

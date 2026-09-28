@@ -1,17 +1,23 @@
-// File-level Live2D import/export: reads a model3.json (or a bare .moc3) with its textures, motions, physics, pose
-// and display info, and writes the runtime set back.
-import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+// File-level Live2D import/export: imports a Cubism Editor model (.cmo3) and writes the runtime set (model3.json,
+// moc3, physics3, ...). Reading a runtime set back (importLive2DRuntime) is kept for tests and the local comparison
+// tools; it is not offered as an import (a runtime export has lost the editor's names, hidden objects and groups).
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
+import { inflateRawSync, constants as zlibConstants } from "node:zlib";
 import { loadModel, saveModel } from "../core/index.ts";
 import type { Model } from "../core/index.ts";
 import { exportLive2DData } from "./export.ts";
 import { readMoc3, writeMoc3 } from "./moc3.ts";
 import { applyLive2DJson, mocToModel } from "./import.ts";
 import type { Live2DImportResult } from "./import.ts";
+import { cmo3ToModel, readCmo3 } from "./cmo3.ts";
+import { can3ToMotions } from "./can3.ts";
+import { readCaff } from "./caff.ts";
 
 export { readMoc3, writeMoc3 } from "./moc3.ts";
 export { mocToModel, syncLive2DVertices, f32, motionToAnimation, live2dMeta } from "./import.ts";
 export { exportLive2DData } from "./export.ts";
+export { cmo3ToModel, readCmo3 } from "./cmo3.ts";
 
 export interface Live2DFileImport extends Live2DImportResult {
   /** Image id -> source PNG path. */
@@ -82,10 +88,10 @@ export function importLive2DFiles(path: string, opts: { name?: string } = {}): L
 }
 
 /**
- * Imports and saves: the model at modelPath, textures copied to images/<model name>/ next to it (texture pages are
- * named texture_00.png and so on in every Cubism export, so each model gets its own folder).
+ * Reads a runtime set and saves it as a model (textures copied to images/<model name>/). Tests and local tools only:
+ * the import users get is importLive2D (.cmo3).
  */
-export function importLive2D(path: string, modelPath: string, opts: { name?: string } = {}): Live2DFileImport {
+export function importLive2DRuntime(path: string, modelPath: string, opts: { name?: string } = {}): Live2DFileImport {
   const res = importLive2DFiles(path, opts);
   const dir = dirname(resolve(modelPath));
   const folder = basename(modelPath).replace(/.rig.json$|.json$/i, "") || "live2d";
@@ -93,6 +99,73 @@ export function importLive2D(path: string, modelPath: string, opts: { name?: str
   for (const [id, src] of res.textures) {
     res.model.images![id] = { path: `images/${folder}/${id}.png` };
     if (existsSync(src)) copyFileSync(src, join(dir, "images", folder, `${id}.png`));
+  }
+  saveModel(modelPath, res.model);
+  return res;
+}
+
+const inflateRaw = (d: Uint8Array) => new Uint8Array(inflateRawSync(d, { finishFlush: zlibConstants.Z_SYNC_FLUSH }));
+
+export interface Cmo3FileImport extends Live2DImportResult {
+  /** Image id -> PNG bytes (the texture atlases). */
+  textures: Map<string, Uint8Array>;
+}
+
+/**
+ * Reads a Cubism Editor model (.cmo3): the rig, physics, names and the texture atlases the editor last rendered, and
+ * the motions of its animation files (.can3): `opts.motions`, or by default every .can3 in the model's folder.
+ */
+export function importCmo3Files(path: string, opts: { name?: string; motions?: string[] } = {}): Cmo3FileImport {
+  if (!/.cmo3$/i.test(path)) {
+    throw new Error(
+      /.(moc3|json)$/i.test(path)
+        ? `${basename(path)} is a runtime export: import the Cubism Editor model (.cmo3) it was exported from`
+        : `${basename(path)} is not a Cubism Editor model (.cmo3)`,
+    );
+  }
+  if (!existsSync(path)) throw new Error(`not found: ${path}`);
+  const { entries, xml } = readCmo3(new Uint8Array(readFileSync(path)), inflateRaw);
+  const name = opts.name ?? basename(path).replace(/.cmo3$/i, "");
+  const res = cmo3ToModel(xml, { name });
+  const can3 = opts.motions ?? readdirSync(dirname(resolve(path))).filter((f) => /.can3$/i.test(f)).map((f) => join(dirname(resolve(path)), f));
+  const motions: Array<{ group: string; index: number; file: string; json: unknown }> = [];
+  for (const file of can3) {
+    if (!existsSync(file)) {
+      res.warnings.push(`animation file not found: ${file}`);
+      continue;
+    }
+    const main = readCaff(new Uint8Array(readFileSync(file)), inflateRaw).find((e) => e.path === "main.xml");
+    if (!main) {
+      res.warnings.push(`${basename(file)} is not a Cubism animation file (.can3)`);
+      continue;
+    }
+    const got = can3ToMotions(new TextDecoder().decode(main.data), res.uuids);
+    for (const w of got.warnings) res.warnings.push(`${basename(file)}: ${w}`);
+    for (const m of got.motions) motions.push({ group: "Idle", index: motions.length, file: `motion/${m.name}.motion3.json`, json: m.json });
+    res.log.push(`${basename(file)}: ${got.motions.length} motion(s)`);
+  }
+  if (motions.length) applyLive2DJson(res, { motions });
+  const textures = new Map<string, Uint8Array>();
+  for (const t of res.textures) {
+    const e = entries.find((x) => x.path === t.entry);
+    if (e) textures.set(t.id, e.data);
+    else res.warnings.push(`texture ${t.entry} is missing from the file`);
+  }
+  return { model: res.model, log: res.log, warnings: res.warnings, textures };
+}
+
+/**
+ * Imports a Cubism Editor model (.cmo3) and saves it at modelPath, the texture atlases written to images/<model
+ * name>/ next to it (each model gets its own folder: every model's pages are texture_00.png and so on).
+ */
+export function importLive2D(path: string, modelPath: string, opts: { name?: string; motions?: string[] } = {}): Cmo3FileImport {
+  const res = importCmo3Files(path, opts);
+  const dir = dirname(resolve(modelPath));
+  const folder = basename(modelPath).replace(/.rig.json$|.json$/i, "") || "live2d";
+  mkdirSync(join(dir, "images", folder), { recursive: true });
+  for (const [id, png] of res.textures) {
+    res.model.images![id] = { path: `images/${folder}/${id}.png` };
+    writeFileSync(join(dir, "images", folder, `${id}.png`), png);
   }
   saveModel(modelPath, res.model);
   return res;

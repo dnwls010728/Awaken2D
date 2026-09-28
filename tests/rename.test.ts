@@ -10,10 +10,7 @@ function rigged() {
     { op: "addMesh", id: "glove", shape: { rect: { x: 50, y: -5, width: 20, height: 10 } }, color: "#00ff00", bone: "hand" },
     { op: "updateSlot", id: "glove", clip: "skin" },
     { op: "addIk", id: "reach", bones: ["arm", "hand"] },
-    { op: "addPhysics", id: "wobble", bones: ["hand"] },
-    { op: "addParameter", id: "P", min: 0, max: 1 },
-    { op: "setParamBoneKeys", parameter: "P", bone: "arm", channel: "rotate", keys: [{ at: 1, v: 10 }] },
-    { op: "setParamSlotKeys", parameter: "P", slot: "skin", channel: "color", keys: [{ at: 1, v: "#ff00ff" }] },
+    { op: "setConstraint", kind: "physics", constraint: { id: "wobble", bone: "hand", rotate: 1, inertia: 0.5, strength: 100, damping: 0.85, mass: 1, wind: 0, gravity: 0, mix: 1 } },
     { op: "setAnimation", name: "a", duration: 1 },
     { op: "setKeys", animation: "a", bone: "arm", channel: "rotate", keys: [{ t: 0, v: 5 }] },
     { op: "setSlotKeys", animation: "a", slot: "skin", channel: "color", keys: [{ t: 0, v: "#ffffff" }] },
@@ -27,15 +24,14 @@ test("renameBone updates every reference", () => {
   assert.equal(m.bones.find((b) => b.id === "hand")!.parent, "upper_arm");
   assert.deepEqual(m.ik![0].bones, ["upper_arm", "hand"]);
   assert.ok(m.animations!.a.bones!.upper_arm);
-  assert.ok(m.parameters![0].bones!.upper_arm);
+  assert.equal(m.spinePhysics![0].bone, "hand");
   assert.deepEqual(validateModel(m).filter((i) => i.level === "error"), []);
   assert.throws(() => applyOps(m, [{ op: "renameBone", id: "hand", to: "upper_arm" }]), /already exists/);
 });
 
-test("renameSlot updates clips, animations and parameters", () => {
+test("renameSlot updates clips and animations", () => {
   const m = applyOps(rigged(), [{ op: "renameSlot", id: "skin", to: "body" }]).model;
   assert.equal(m.slots.find((s) => s.id === "glove")!.clip, "body");
   assert.ok(m.animations!.a.slots!.body);
-  assert.ok(m.parameters![0].slots!.body);
   assert.deepEqual(validateModel(m).filter((i) => i.level === "error"), []);
 });

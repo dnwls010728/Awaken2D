@@ -18,11 +18,8 @@ function rigged() {
     { op: "addImage", id: "img", path: "img.png" },
     // the image covers x 0..200, y -50..50 (y up); a coarse 2x1 mesh
     { op: "addMesh", id: "m", shape: { rect: { x: 0, y: -50, width: 200, height: 100 }, cols: 2, rows: 1 }, image: "img", bones: ["a", "b"] },
-    { op: "addParameter", id: "P", min: 0, max: 1 },
-    { op: "setParamShape", parameter: "P", attachment: "m", keys: [{ at: 0 }, { at: 1, transform: { translate: [0, 10] } }] },
-    { op: "addParameter", id: "Q", min: 0, max: 1 },
-    { op: "addCombo", id: "pq", params: ["P", "Q"] },
-    { op: "setComboKey", combo: "pq", at: [1, 1], meshes: { m: { transform: { translate: [5, 0] } } } },
+    { op: "setAnimation", name: "a", duration: 1 },
+    { op: "setDeformKeys", animation: "a", attachment: "m", keys: [{ t: 0 }, { t: 1, transform: { translate: [5, 10] } }] },
   ]).model;
 }
 
@@ -40,19 +37,18 @@ test("remeshFromAlpha places a grid over the opaque pixels, in the mesh's image 
   assert.equal(g.uvs!.length, g.vertices.length);
 });
 
-test("setMeshGeometry carries weights, blend shapes and combo shapes over to the new vertices", () => {
+test("setMeshGeometry carries weights and deform keys over to the new vertices", () => {
   const m = rigged();
   const { rgba, w, h } = image();
   const g = remeshFromAlpha(m.attachments.m, rgba, w, h, 5);
   const res = applyOps(m, [{ op: "setMeshGeometry", attachment: "m", ...g }]);
   const att = res.model.attachments.m;
   assert.equal(att.vertices.length, g.vertices.length);
-  assert.match(res.log[0], /weights carried over, 3 shape keys resampled/);
-  // every new vertex got the uniform +10 y shape and the +5 x combo shape
-  const shape = res.model.parameters![0].meshes!.m[1].v;
+  assert.match(res.log[0], /weights carried over, 2 shape keys resampled/);
+  // every new vertex got the uniform (+5, +10) deform
+  const shape = res.model.animations!.a.deform!.m[1].v;
   assert.equal(shape.length, att.vertices.length);
-  assert.ok(shape.every(([, dx, dy]) => Math.abs(dx) < 1e-6 && Math.abs(dy - 10) < 1e-6));
-  assert.ok(res.model.combos![0].keys[0].meshes!.m.every(([, dx]) => Math.abs(dx - 5) < 1e-6));
+  assert.ok(shape.every(([, dx, dy]) => Math.abs(dx - 5) < 1e-6 && Math.abs(dy - 10) < 1e-6));
   // weights still come from bones a and b, and vertices near x = 0 lean to bone a
   const left = att.vertices.findIndex((v) => v[0] === 0);
   assert.equal(att.weights[left][0][0], "a");

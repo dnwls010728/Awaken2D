@@ -21,28 +21,29 @@ Commands:
   validate <model.json> [--json]         structural + pose checks (exit 1 on errors)
   apply <model.json> <ops.json|->        apply an array of edit ops atomically, then validate
   render <model.json> [-o out.png]       render one frame
-        [--anim NAME] [--time SEC] [--size PX] [--overlay bones,names,mesh,axes|all]
+        [--anim NAME] [--time SEC] [--size PX] [--overlay bones,names,mesh,axes,deformers,glue,noart|all]
         [--bg #rrggbb|transparent] [--ss N] [--no-physics]
   sheet <model.json> --anim NAME [-o out.png]
         [--frames N] [--cols N] [--cell PX] [--overlay ...]   contact sheet of an animation
   import <art.psd|art.png|folder> <model.json> [--target spine|live2d]   layers -> slots + textured meshes (PNGs in images/)
         [--origin content|canvas-bottom|center|top-left|X,Y] [--scale S] [--include-hidden] [--propose] [--ik] [--force]
+        (default origin: canvas center for Live2D, visible art's bottom-center for Spine)
         meshes are automatic by default: traced around each layer's art, vertex count and spacing chosen from its
         size, shape and name (hair/skirt/arm -> dense, pupils/buttons/small art -> outline only)
         [--mesh-density K] (more / fewer vertices) [--mesh-role NAME=rigid|standard|flexible,...]
         [--mesh grid] [--spacing PX]: the old grid mesh over solid cells instead
-        (--target none: legacy model without a target, e.g. the demo; takes --physics spring chains, exports drop them)
   propose <model.json> [--apply] [--json] [--ik] [--physics]   suggest bones + bindings (+ limb IK) for an imported model
-        (--physics: spring-bone chains, only for models without a target: neither Spine nor Live2D export them)
+        (--physics: tails and other dangling layers become 3-bone chains with Spine physics constraints)
   spine-import <skeleton.json> <model.json> [--atlas FILE] [--images DIR] [--force]
         Spine 3.8/4.x export (+ atlas next to it) -> Awaken2D model; poses match Spine
         [--mesh auto [--mesh-density K]]: region attachments become automatic meshes traced around their art
         (exported as meshes; without it regions stay quads, exactly as in Spine)
   spine-export <model.json> <outDir> [--name N] [--no-images]
         -> <name>.json (Spine 4.x) + <name>.atlas + <name>.png + images/ (for Spine's Import Data)
-  live2d-import <name.model3.json|name.moc3> <model.json> [--force]
-        Live2D Cubism runtime model (moc3 + textures, motions, physics, pose, display info) -> Awaken2D model;
-        poses match the Cubism Core
+  live2d-import <name.cmo3> <model.json> [--motions a.can3,b.can3] [--force]
+        Cubism Editor model (parameters, parts, deformers, art meshes, glue, blend shapes, deformation paths,
+        physics, names, texture atlases) -> Awaken2D model; poses match the Cubism Core. Motions come from the
+        animation files (.can3): --motions, or every .can3 next to the .cmo3
   live2d-export <model.json> <outDir> [--name N]
         -> <name>.model3.json + .moc3 + .physics3.json + .cdi3.json + motion/*.motion3.json + textures
   remesh <model.json> <attachment...|--all> [--spacing PX] [--threshold A]   rebuild image meshes from the
@@ -149,7 +150,7 @@ function parseRoles(v: string | undefined): Record<string, MeshRole> | undefined
 
 function targetFlag(v: unknown, required: boolean): ModelTarget | undefined {
   if (v === undefined && !required) return undefined;
-  if (v !== "spine" && v !== "live2d") throw new Error("--target must be spine or live2d (what the model is made for: Spine2D or Live2D)");
+  if (v !== "spine" && v !== "live2d") throw new Error("--target must be spine or live2d (what the model is made for: Spine or Live2D)");
   return v;
 }
 
@@ -231,9 +232,7 @@ function main(argv: string[]): number {
       const source = need(pos, 0, "source (.psd/.png/folder)");
       const file = need(pos, 1, "model path");
       if (existsSync(file) && !flags.force) throw new Error(`${file} exists (use --force to overwrite)`);
-      // --target none: a legacy model without a target (every Awaken2D feature, e.g. the demo's spring tail and face
-      // parameters; neither export keeps those)
-      const target = flags.target === "none" ? null : (targetFlag(flags.target, false) ?? "spine");
+      const target = targetFlag(flags.target, false) ?? "spine";
       const res = importLayers(readLayerSource(source), file, {
         origin: parseOrigin(str(flags.origin)),
         scale: num(flags.scale, "scale"),
@@ -245,9 +244,8 @@ function main(argv: string[]): number {
         includeHidden: flags["include-hidden"] === true,
         name: str(flags.name),
       });
-      if (flags.physics && target) throw new Error("--physics (spring bones) is not exported to Spine or Live2D: only --target none takes it");
-      if (target === "live2d" && (flags.propose || flags.ik)) throw new Error("--propose / --ik build bones: Spine models only");
-      let model = target ? applyOps(res.model, [{ op: "setTarget", target }]).model : res.model;
+      if (target === "live2d" && (flags.propose || flags.ik || flags.physics)) throw new Error("--propose / --ik / --physics build bones: Spine models only");
+      let model = applyOps(res.model, [{ op: "setTarget", target }]).model;
       console.log(res.log.map((l) => "- " + l).join("\n"));
       for (const w of res.warnings) console.log(`WARN ${w}`);
       if (flags.propose) {
@@ -263,7 +261,7 @@ function main(argv: string[]): number {
     case "propose": {
       const file = need(pos, 0, "model path");
       const { model, baseDir } = loadModel(file);
-      if (flags.physics && model.target) throw new Error(`--physics (spring bones) is not exported to ${model.target === "spine" ? "Spine" : "Live2D"}: only models without a target use it`);
+      if (model.target === "live2d") throw new Error("this is a Live2D model: it has no bones (use deformers)");
       const p = proposeBones(model, { ik: flags.ik === true, physics: flags.physics === true });
       if (flags.json) console.log(JSON.stringify({ ops: p.ops, report: p.report }, null, 2));
       else console.log(p.report.map((l) => "- " + l).join("\n"));
@@ -301,11 +299,11 @@ function main(argv: string[]): number {
       return 0;
     }
     case "live2d-import": {
-      const src = need(pos, 0, "Live2D .model3.json or .moc3");
+      const src = need(pos, 0, "Cubism Editor model (.cmo3)");
       const file = need(pos, 1, "model path");
       if (existsSync(file) && !flags.force) throw new Error(`${file} exists (use --force to overwrite)`);
       mkdirSync(dirname(resolve(file)), { recursive: true });
-      const res = importLive2D(src, file);
+      const res = importLive2D(src, file, typeof flags.motions === "string" ? { motions: flags.motions.split(",").filter(Boolean) } : {});
       console.log(res.log.map((l) => "- " + l).join("\n"));
       for (const w of res.warnings) console.log(`WARN ${w}`);
       console.log(formatIssues(validateModel(res.model, { baseDir: dirname(resolve(file)) })));

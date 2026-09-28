@@ -14,7 +14,6 @@ test("a Spine model refuses Live2D ops, a Live2D model refuses bones", () => {
   ]);
   assert.throws(() => apply(s2, [{ op: "addParameter", id: "P", min: 0, max: 1 }]), /for Live2D models/);
   assert.throws(() => apply(s2, [{ op: "enableLive2D" }]), /for Live2D models/);
-  assert.throws(() => apply(s2, [{ op: "addCombo", id: "c", params: ["a", "b"] }]), /neither Spine nor Live2D/);
 
   const l2d = emptyModel("l", "live2d");
   assert.ok(l2d.live2d, "a Live2D model starts with a rig (canvas)");
@@ -33,9 +32,9 @@ test("a Spine model refuses Live2D ops, a Live2D model refuses bones", () => {
   assert.equal(normalizeModel(JSON.parse(serializeModel(l2))).target, "live2d", "the target is saved");
 });
 
-test("setTarget converts an older model when it fits, and says what is in the way otherwise", () => {
+test("setTarget turns a Spine model with only art into a Live2D model, and says what is in the way otherwise", () => {
   const old = apply(emptyModel("o"), [{ op: "addMesh", id: "m", shape: { rect: { x: 0, y: 0, width: 10, height: 10 } } }]);
-  assert.equal(old.target, undefined);
+  assert.equal(old.target, "spine", "new models are Spine models unless told otherwise");
   const l = apply(old, [{ op: "setTarget", target: "live2d" }]);
   assert.equal(l.target, "live2d");
   assert.ok(l.attachments.m.live2d);
@@ -78,11 +77,9 @@ test("parameter details: names, groups, decimals, repeat, and renaming follows e
   assert.throws(() => apply(m, [{ op: "updateParameter", id: "Eye", decimals: 1.5 }]), /decimals/);
 });
 
-test("spring bones are refused on Spine and Live2D models (neither export has them)", () => {
+test("Awaken2D's own spring bones, parameter effects, warps and combos are gone: their ops are unknown", () => {
   for (const target of ["spine", "live2d"] as const) {
     const m = emptyModel("s", target);
-    assert.throws(() => applyOps(m, [{ op: "addPhysics", id: "x", bones: ["root"] }]), /spring bones/);
+    for (const op of ["addPhysics", "setParamBoneKeys", "addWarp", "addCombo"]) assert.throws(() => applyOps(m, [{ op } as never]), /unknown op/);
   }
-  const spine = applyOps(emptyModel("s", "spine"), [{ op: "setAnimation", name: "a", duration: 1 }]).model;
-  assert.throws(() => applyOps(spine, [{ op: "clearKeys", animation: "a", physics: "x" } as never]), /spring/);
 });

@@ -23,17 +23,23 @@
   `tests/spine-reference.ts` evaluates Spine data by Spine's own rules (local, gitignored: `work/tools/spine-compare.ts`,
   `spine-roundtrip.ts` check a real export). Keep imported data exact: unedited attachments/deforms are re-emitted
   from `meta.spine` (guarded by signatures), so ops that change a mesh must replace the attachment object.
-- Live2D interop lives in `src/live2d` (moc3.ts binary reader/writer, import.ts / export.ts pure, index.ts file I/O);
+- Live2D interop lives in `src/live2d` (moc3.ts binary reader/writer, import.ts / export.ts pure, index.ts file I/O;
+  the user-facing import reads the Cubism Editor file: caff.ts container + cmo3.ts main.xml -> rig, can3.ts
+  animation scenes -> motion3 -> animations; checked with `work/tools/cmo3-compare.ts <cmo3> <runtime moc3>` and
+  `can3-compare.ts <cmo3> <can3> <motion folder>` against the runtime export of the same files; deformation paths
+  (editing aid) are `src/core/live2dpath.ts`, curve checked by `work/tools/path-curve-check.ts`; the runtime-set
+  reader `importLive2DRuntime` stays for tests and tools);
   evaluation is core: `src/core/live2d.ts` (keyforms, deformers, glue, draw order), `live2dphysics.ts` (physics3,
   Cubism Framework step for step), `live2dpose.ts` (pose3 fades), `live2dops.ts` (edit ops). Keep it exact: the
   local tools `work/tools/live2d-compare.ts`, `live2d-fuzz.ts`, `live2d-motion-compare.ts` (gitignored) compare
-  with the official Cubism Core / Framework, and `tests/live2d-golden*.json` hold their output for the fixture rig.
+  with the official Cubism Core / Framework (Core 6 from the Web SDK in `work/cubism-web-5r5`, loaded by
+  `work/tools/cubism-core.cjs`; mao_pro in Downloads/mao_ko is the blend-shape reference), and
+  `tests/live2d-golden*.json` hold their output for the fixture rigs (`-blend` for blend shapes).
   Live2D edits replace `model.live2d` / attachment objects (copy on write), like the other ops.
 - Models have a `target` ("spine" | "live2d"): `checkTarget` in ops.ts refuses the other kind's ops, the editor hides
-  them (`.spine-only` / `.live2d-only` / `.untargeted-only` classes on body[data-target], timeline track kinds). Files
-  without a target allow everything (tests and older examples); spring bones (`physics`) are untargeted-only since
-  neither export keeps them (the demo character is imported with `--target none`). The editor cannot create models (no New, no
-  /api/new): agents do, with `rig_new` + target.
+  them (`.spine-only` / `.live2d-only` classes on body[data-target], timeline track kinds). Every model has one
+  (`emptyModel` defaults to spine; files saved without one load as live2d when they have a rig, else spine). The
+  editor cannot create models (no New, no /api/new): agents do, with `rig_new` + target.
 - Web editor: `src/web/server.ts` (HTTP API + SSE + undo history) and `web/` (browser code). Browser TS is served
   type-stripped; `node:fs`/`node:path` imports are rewritten to `web/shims/`. Keep core code browser-safe apart
   from those two modules. `window.awaken2d` exposes editor state for debugging.

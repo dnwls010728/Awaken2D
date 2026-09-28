@@ -6,7 +6,8 @@ export interface Field {
   label: string;
   type?: "text" | "number" | "checkbox" | "select" | "list" | "path";
   value?: string | number | boolean;
-  options?: Array<[string, string]>; // select / list: [value, label]
+  /** select / list: [value, label]; list items may add a badge text (e.g. "Live2D") shown on the right. */
+  options?: Array<[string, string] | [string, string, string]>;
   placeholder?: string;
   hint?: string;
   step?: number;
@@ -24,6 +25,11 @@ export interface Field {
 export interface MenuItem {
   label: string;
   danger?: boolean;
+  /** A divider line (label and run are ignored). */
+  separator?: boolean;
+  disabled?: boolean;
+  /** Shortcut shown on the right. */
+  hint?: string;
   run: () => Promise<boolean | void> | boolean | void;
 }
 
@@ -230,8 +236,8 @@ function fieldEl(f: Field, inputs: Map<string, () => string | number | boolean>,
       const q = filter.value.toLowerCase();
       list.replaceChildren(
         ...options
-          .filter(([v, l]) => !q || (v + l).toLowerCase().includes(q))
-          .map(([v, l]) =>
+          .filter(([v, l, b]) => !q || (v + l + (b ?? "")).toLowerCase().includes(q))
+          .map(([v, l, badge]) =>
             el(
               "div",
               {
@@ -256,7 +262,7 @@ function fieldEl(f: Field, inputs: Map<string, () => string | number | boolean>,
                   })));
                 },
               },
-              l,
+              ...(badge ? [el("span", { class: "dlg-item-label" }, l), el("span", { class: `dlg-badge ${badge.toLowerCase()}`, translate: "no" }, badge)] : [l]),
             ),
           ),
       );
@@ -299,11 +305,21 @@ export function showMenu(x: number, y: number, items: MenuItem[]): void {
       close();
     }
   };
-  for (const it of items) {
+  items.forEach((it, i) => {
+    if (it.separator) {
+      // no dividers at the ends or twice in a row
+      if (i > 0 && i < items.length - 1 && !items[i - 1].separator) menu.append(el("hr", { role: "separator" }));
+      return;
+    }
     menu.append(
-      el("button", { class: it.danger ? "danger" : "", role: "menuitem", onclick: () => (close(), void it.run()) }, it.label),
+      el(
+        "button",
+        { class: it.danger ? "danger" : "", role: "menuitem", disabled: !!it.disabled, onclick: () => (close(), void it.run()) },
+        el("span", { class: "label" }, it.label),
+        ...(it.hint ? [el("kbd", {}, it.hint)] : []),
+      ),
     );
-  }
+  });
   document.body.append(menu);
   // keep it on screen
   const r = menu.getBoundingClientRect();

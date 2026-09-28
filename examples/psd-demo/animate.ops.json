@@ -6,7 +6,9 @@
     { "t": 0, "v": 10, "ease": "easeInOut" }, { "t": 0.3, "v": 45, "ease": "easeInOut" }, { "t": 0.6, "v": 10, "ease": "easeInOut" },
     { "t": 0.9, "v": 45, "ease": "easeInOut" }, { "t": 1.2, "v": 10 }] },
   { "op": "setKeys", "animation": "wave", "bone": "head", "channel": "rotate", "keys": [{ "t": 0, "v": -6 }, { "t": 1.2, "v": -6 }] },
-  { "op": "updatePhysics", "id": "tail_spring", "gravity": [0, -1500] },
+  { "op": "updateConstraint", "kind": "physics", "id": "tail_1", "set": { "gravity": 60 } },
+  { "op": "updateConstraint", "kind": "physics", "id": "tail_2", "set": { "gravity": 60 } },
+  { "op": "updateConstraint", "kind": "physics", "id": "tail_3", "set": { "gravity": 60 } },
 
   { "op": "setAnimation", "name": "crouch_reach", "duration": 2, "loop": true },
   { "op": "setKeys", "animation": "crouch_reach", "bone": "hip", "channel": "translate", "keys": [

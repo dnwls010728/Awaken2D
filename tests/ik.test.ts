@@ -120,7 +120,7 @@ test("world-space rotate keys account for the parent's rotation", () => {
     { op: "setKeys", animation: "a", bone: "c", channel: "rotate", keys: [{ t: 0, v: 45 }], space: "world" },
   ]).model;
   const w = computePose(m, "a", 0).byId.get("c")!.world;
-  assert.ok(Math.abs(Math.atan2(w[1], w[0]) * (180 / Math.PI) - 45) < 1e-6);
+  assert.ok(Math.abs(Math.atan2(w[1], w[0]) * (180 / Math.PI) - 45) < 1e-4, "Spine models pose in float32 like the runtime");
 });
 
 test("IK survives serialization", () => {

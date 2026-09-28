@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { applyOps, emptyModel } from "../src/core/index.ts";
+import { applyOps, computePose, emptyModel } from "../src/core/index.ts";
 
 function rigged() {
   return applyOps(emptyModel("t"), [
@@ -33,4 +33,22 @@ test("updateBone carry translates meshes with a moved bone", () => {
   const xs = m.attachments.glove.vertices.map((v) => v[0]);
   assert.equal(Math.min(...xs), 60);
   assert.equal(Math.max(...xs), 80);
+});
+
+test("updateBone sets and clears shear (Spine)", () => {
+  const m = applyOps(rigged(), [{ op: "updateBone", id: "arm", shearX: 10, shearY: -5 }]).model;
+  const arm = m.bones.find((b) => b.id === "arm")!;
+  assert.deepEqual([arm.shearX, arm.shearY], [10, -5]);
+  const cleared = applyOps(m, [{ op: "updateBone", id: "arm", shearX: 0, shearY: 0 }]).model.bones.find((b) => b.id === "arm")!;
+  assert.deepEqual([cleared.shearX, cleared.shearY], [undefined, undefined]);
+});
+
+test("updateBone compensate keeps the child bones in place (Spine's bone compensation)", () => {
+  const base = rigged();
+  const world = (m: typeof base, id: string) => computePose(m).byId.get(id)!.world;
+  const before = world(base, "hand");
+  const m = applyOps(base, [{ op: "updateBone", id: "arm", rotation: 30, compensate: true }]).model;
+  world(m, "hand").forEach((v, i) => assert.ok(Math.abs(v - before[i]) < 1e-3, `hand world[${i}]`));
+  const moved = applyOps(base, [{ op: "updateBone", id: "arm", rotation: 30 }]).model;
+  assert.ok(Math.abs(world(moved, "hand")[4] - before[4]) > 1, "without it the child follows");
 });

@@ -109,9 +109,6 @@ export function summarizeModel(model: Model): ModelSummary {
           Object.entries(tl).map(([ch, keys]) => `slot ${sid}.${ch} (${(keys as unknown[]).length} keys)`),
         ),
         ...Object.entries(anim.params ?? {}).map(([pid, keys]) => `param ${pid} (${keys.length} keys)`),
-        ...Object.entries(anim.physics ?? {}).flatMap(([pid, tl]) =>
-          Object.entries(tl).map(([ch, keys]) => `physics ${pid}.${ch} (${(keys as unknown[]).length} keys)`),
-        ),
         ...Object.entries(anim.ik ?? {}).flatMap(([iid, tl]) =>
           Object.entries(tl).map(([ch, keys]) => `ik ${iid}.${ch} (${(keys as unknown[]).length} keys)`),
         ),
@@ -124,7 +121,7 @@ export function describeModel(model: Model): string {
   const s = summarizeModel(model);
   const lines: string[] = [];
   lines.push(`Model "${s.name}" (${s.format}); coordinates: +x right, +y up, degrees CCW`);
-  lines.push(model.target === "live2d" ? "Target: Live2D (parameters, keyforms, deformers, parts; no bones)" : model.target === "spine" ? "Target: Spine2D (bones, weights, IK, spring bones, timelines; no parameters)" : "Target: not set (older file; setTarget spine|live2d)");
+  lines.push(model.target === "live2d" ? "Target: Live2D (parameters, keyforms, deformers, parts; no bones)" : "Target: Spine (bones, weights, constraints, skins, timelines; no parameters)");
   if (s.bounds) lines.push(`Setup bounds: x ${fmt(s.bounds.minX)}..${fmt(s.bounds.maxX)}, y ${fmt(s.bounds.minY)}..${fmt(s.bounds.maxY)}`);
   lines.push("", `Bones (${s.bones.length}) - local transform | world start -> end @ angle:`);
   for (const b of s.bones) {
@@ -166,47 +163,34 @@ export function describeModel(model: Model): string {
   for (const d of model.live2d?.deformers ?? []) addUse(d.id, d.grid);
   for (const pt of model.live2d?.parts ?? []) addUse(pt.id, pt.grid);
   for (const g of model.live2d?.glue ?? []) addUse(g.id, g.grid);
+  // blend shapes (added on top of the keyforms), and the constraints that limit them
+  const bsUse = new Map<string, string[]>();
+  const bsLimits = new Map<string, Set<string>>();
+  const addShapes = (id: string, list?: Array<{ param: string; constraints?: Array<{ param: string }> }>) => {
+    for (const sh of list ?? []) {
+      bsUse.set(sh.param, [...(bsUse.get(sh.param) ?? []), id]);
+      for (const c of sh.constraints ?? []) bsLimits.set(c.param, (bsLimits.get(c.param) ?? new Set()).add(sh.param));
+    }
+  };
+  for (const [id, a] of Object.entries(model.attachments)) addShapes(id, a.live2d?.blendShapes);
+  for (const d of model.live2d?.deformers ?? []) addShapes(d.id, d.blendShapes);
+  for (const pt of model.live2d?.parts ?? []) addShapes(pt.id, pt.blendShapes);
+  for (const g of model.live2d?.glue ?? []) addShapes(g.id, g.blendShapes);
+  const few = (ids: string[]) => (ids.length <= 6 ? ids.join(", ") : `${ids.slice(0, 6).join(", ")} +${ids.length - 6} more`);
   if (model.parameters?.length) {
     lines.push("", `Parameters (${model.parameters.length}) - value range [default]: what they drive`);
     for (const p of model.parameters) {
       const use = l2dUse.get(p.id);
       const drives = [
-        ...(use ? [`Live2D keyforms of ${use.objects.length <= 6 ? use.objects.join(", ") : `${use.objects.slice(0, 6).join(", ")} +${use.objects.length - 6} more`}`] : []),
-        ...Object.entries(p.bones ?? {}).map(([b, tl]) => `bone ${b}.${Object.keys(tl).join("/")}`),
-        ...Object.entries(p.slots ?? {}).map(([s, tl]) => `slot ${s}.${Object.keys(tl).join("/")}`),
-        ...Object.keys(p.meshes ?? {}).map((a) => `shape ${a}`),
-        ...Object.keys(p.warps ?? {}).map((w) => `warp ${w}`),
+        ...(use ? [`Live2D keyforms of ${few(use.objects)}`] : []),
+        ...(bsUse.has(p.id) ? [`blend shape (keys ${p.blendShape?.keys.join(", ")}, base ${p.blendShape?.keys[p.blendShape.base]}) of ${few(bsUse.get(p.id)!)}`] : []),
+        ...(bsLimits.has(p.id) ? [`limits the blend shapes of ${[...bsLimits.get(p.id)!].join(", ")}`] : []),
       ];
       const keyed = [...new Set([
-        ...Object.values(p.bones ?? {}).flatMap((tl) => Object.values(tl).flatMap((k) => (k as Array<{ at: number }>).map((x) => x.at))),
-        ...Object.values(p.slots ?? {}).flatMap((tl) => Object.values(tl).flatMap((k) => (k as Array<{ at: number }>).map((x) => x.at))),
-        ...Object.values(p.meshes ?? {}).flatMap((k) => k.map((x) => x.at)),
-        ...Object.values(p.warps ?? {}).flatMap((k) => k.map((x) => x.at)),
         ...(use?.keys ?? []),
+        ...(p.blendShape?.keys ?? []),
       ])].sort((a, b) => a - b);
       lines.push(`  ${p.id}${p.name ? ` "${p.name}"` : ""}: ${p.min}..${p.max} [${p.default}]${p.repeat ? " repeat" : ""} keys at ${keyed.join(", ") || "-"}: ${drives.join(", ") || "(drives nothing yet)"}`);
-    }
-  }
-  if (model.warps?.length) {
-    lines.push("", `Warp deformers (${model.warps.length}), applied in order before skinning:`);
-    for (const w of model.warps) {
-      const r = w.rect;
-      lines.push(`  ${w.id}: ${w.cols}x${w.rows} cells over x ${fmt(r.x)}..${fmt(r.x + r.width)}, y ${fmt(r.y)}..${fmt(r.y + r.height)} -> ${w.targets.join(", ")}`);
-    }
-  }
-  if (model.combos?.length) {
-    lines.push("", `Combination keyforms (${model.combos.length}), added on top of the parameters' own effects:`);
-    for (const c of model.combos) {
-      const targets = new Set(c.keys.flatMap((k) => [...Object.keys(k.bones ?? {}).map((b) => `bone ${b}`), ...Object.keys(k.meshes ?? {}).map((a) => `shape of ${a}`), ...Object.keys(k.warps ?? {}).map((w) => `warp ${w}`)]));
-      lines.push(`  ${c.id}: ${c.params.join(" x ")} | keys at ${c.keys.map((k) => `(${k.at.join(", ")})`).join(" ") || "(none)"} | drives ${[...targets].join(", ") || "nothing yet"}`);
-    }
-  }
-  if (model.physics?.length) {
-    lines.push("", `Spring bones (${model.physics.length}), simulated after IK:`);
-    for (const c of model.physics) {
-      lines.push(
-        `  ${c.id}: ${c.bones.join(", ")} | ${c.frequency} Hz, damping ${c.damping}, gravity (${c.gravity.join(", ")}), inertia ${c.inertia}, mix ${c.mix}${c.limit ? `, limit ${c.limit}deg` : ""}`,
-      );
     }
   }
   const rig = model.live2d;
@@ -231,7 +215,33 @@ export function describeModel(model: Model): string {
     walk(null, 0);
     const rootMeshes = meshKids.get(null) ?? [];
     if (rootMeshes.length) lines.push(`  (on the canvas: ${rootMeshes.join(", ")})`);
-    lines.push(`Parts: ${rig.parts.map((p) => `${p.id}${p.name ? ` "${p.name}"` : ""}${p.parent ? ` < ${p.parent}` : ""}${p.visible === false ? " (hidden)" : ""}`).join(", ")}`);
+    if (rig.parts.length) {
+      lines.push("Parts (children indented; what each holds):");
+      const partKids = new Map<string | null, typeof rig.parts>();
+      for (const p of rig.parts) partKids.set(p.parent, [...(partKids.get(p.parent) ?? []), p]);
+      const list = (ids: string[]) => (ids.length <= 8 ? ids.join(", ") : `${ids.slice(0, 8).join(", ")} +${ids.length - 8}`);
+      const walkPart = (parent: string | null, depth: number) => {
+        for (const p of partKids.get(parent) ?? []) {
+          const defs = rig.deformers.filter((d) => d.part === p.id).map((d) => d.id);
+          const ms = meshes.filter(([, a]) => a.live2d!.part === p.id).map(([id]) => id);
+          const flags = [p.visible === false ? "hidden" : "", p.disabled ? "disabled" : "", p.locked ? "locked" : "", p.label ? `label ${p.label}` : ""].filter(Boolean);
+          lines.push(
+            `${"  ".repeat(depth + 1)}${p.id}${p.name ? ` "${p.name}"` : ""}${flags.length ? ` (${flags.join(", ")})` : ""}, draw order ${p.drawOrders[0] ?? 500}` +
+              `${defs.length ? `; deformers ${list(defs)}` : ""}${ms.length ? `; meshes ${list(ms)}` : ""}`,
+          );
+          if (depth < 12) walkPart(p.id, depth + 1);
+        }
+      };
+      walkPart(null, 0);
+    }
+    const withPaths = meshes.filter(([, a]) => a.live2d!.paths?.length);
+    if (withPaths.length) {
+      lines.push(`Deformation paths (editing aids; the keyforms hold their effect) on ${withPaths.length} meshes:`);
+      for (const [id, a] of withPaths.slice(0, 40)) {
+        lines.push(`  ${id}${a.live2d!.name ? ` "${a.live2d!.name}"` : ""}: ${a.live2d!.paths!.map((p) => `${p.points.length} points, ${p.bind.length} bound vertices${p.closed ? ", closed" : ""}`).join("; ")}`);
+      }
+      if (withPaths.length > 40) lines.push(`  +${withPaths.length - 40} more`);
+    }
     if (rig.pose?.groups.length) lines.push(`Pose groups (one part shown each): ${rig.pose.groups.map((g) => g.map((p) => p.part).join(" | ")).join("; ")}`);
     if (rig.physics?.settings.length) {
       lines.push(`Physics (${rig.physics.settings.length} pendulums):`);

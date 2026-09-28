@@ -84,6 +84,15 @@ test("importLayers writes cropped PNGs, maps pixels to world, and meshes only so
   const ys = att.vertices.map((v) => v[1]);
   assert.deepEqual([Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)], [-20, 20, 0, 40]);
   assert.deepEqual(validateModel(model, { baseDir: dir }).filter((i) => i.level === "error"), []);
+
+  const live2d = importLayers(src, join(dir, "live2d.rig.json"), { spacing: 10, target: "live2d" }).model;
+  assert.deepEqual((live2d.meta!.import as { origin: number[] }).origin, [50, 50], "Live2D defaults to the canvas center");
+  assert.deepEqual([Math.min(...live2d.attachments.L_shape.vertices.map((v) => v[1])), Math.max(...live2d.attachments.L_shape.vertices.map((v) => v[1]))], [-50, -10]);
+  const ready = applyOps(live2d, [{ op: "setTarget", target: "live2d" }]).model;
+  assert.equal(ready.target, "live2d");
+  assert.deepEqual(ready.attachments.L_shape.vertices, live2d.attachments.L_shape.vertices, "creating the Live2D rig keeps the centered coordinates");
+  const overridden = importLayers(src, join(dir, "overridden.rig.json"), { spacing: 10, target: "live2d", origin: "content" }).model;
+  assert.deepEqual((overridden.meta!.import as { origin: number[] }).origin, [50, 100], "an explicit origin still wins");
 });
 
 test("PSD import + proposed skeleton rigs a figure sensibly", () => {
@@ -134,13 +143,13 @@ test("proposal with ik adds limb IK that keeps the setup pose and bends knees ou
   assert.ok(knee > kneeBefore + 3, `left knee should move outward: ${kneeBefore} -> ${knee}`);
 });
 
-test("proposal with physics turns a tail layer into a spring chain", () => {
+test("proposal with physics turns a tail layer into a chain with Spine physics", () => {
   const dir = mkdtempSync(join(tmpdir(), "awaken2d-phys-"));
   const psd = join(dir, "fig.psd");
   writeFileSync(psd, writePsd({ width: 200, height: 250, layers: [solid("tail", 125, 140, 60, 8, [120, 80, 40]), ...figure()] }));
   const imported = importLayers(readLayerSource(psd), join(dir, "fig.rig.json"));
   const { model } = applyOps(imported.model, proposeBones(imported.model, { physics: true }).ops);
-  assert.deepEqual(model.physics?.map((c) => [c.id, c.bones]), [["tail_spring", ["tail_1", "tail_2", "tail_3"]]]);
+  assert.deepEqual(model.spinePhysics?.map((c) => [c.id, c.bone, c.rotate]), [["tail_1", "tail_1", 1], ["tail_2", "tail_2", 1], ["tail_3", "tail_3", 1]]);
   assert.equal(model.bones.find((b) => b.id === "tail_1")?.parent, "hip");
   assert.deepEqual(validateModel(model, { baseDir: dir }).filter((i) => i.level === "error"), []);
 });

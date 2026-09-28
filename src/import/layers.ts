@@ -44,8 +44,8 @@ export interface ImportOptions {
   /** Model name. Default: source file name. */
   name?: string;
   /**
-   * Pixel position that becomes world (0, 0). "content" (default) = bottom-center of the visible art,
-   * "canvas-bottom" = bottom-center of the canvas, or explicit [x, y] pixels.
+   * Pixel position that becomes world (0, 0). Default: canvas center for Live2D,
+   * bottom-center of the visible art for Spine. Explicit origin always takes precedence.
    */
   origin?: OriginSpec;
   /** World units per pixel. Default 1. */
@@ -60,7 +60,7 @@ export interface ImportOptions {
   /** Role per layer (slot id, layer name or "group/.../name" path) instead of the automatic choice. */
   meshRoles?: Record<string, MeshRole>;
   /** What the model is for: Live2D art meshes get a denser budget (warp deformers bend them). */
-  target?: "spine" | "live2d" | null;
+  target?: "spine" | "live2d";
   /**
    * Grid mesh cell size in pixels, or a function choosing it per layer (after resampling and cropping).
    * Default: ~1/8 of the layer's longest side, at least 8.
@@ -361,7 +361,7 @@ export function importLayers(src: LayerSource, modelPath: string, opts: ImportOp
     cy1 = Math.max(cy1, l.top + box![1] + box![3]);
   }
   const content: [number, number, number, number] | null = Number.isFinite(cx0) ? [cx0, cy0, cx1 - cx0, cy1 - cy0] : null;
-  const [ox, oy] = resolveOrigin(opts.origin ?? "content", src, content);
+  const [ox, oy] = resolveOrigin(opts.origin ?? (opts.target === "live2d" ? "center" : "content"), src, content);
   const toWorld = (px: number, py: number): Vec2 => [round((px - ox) * scale, 3), round((oy - py) * scale, 3)];
 
   const model = emptyModel(opts.name ?? basename(src.source, extname(src.source)));

@@ -257,6 +257,23 @@ export function startServer(opts: ServeOptions): Promise<{ url: string; close: (
     return out.sort();
   };
 
+  /**
+   * What each model file is made for, for the Open dialog. The serializer writes `target` near the top, so only the
+   * head is read; older files without one are Live2D when they hold a Live2D rig (as normalizeModel decides).
+   */
+  const kindCache = new Map<string, { mtime: number; kind: "spine" | "live2d" }>();
+  const modelKind = (file: string): "spine" | "live2d" => {
+    const full = resolve(root, file);
+    const mtime = statSync(full).mtimeMs;
+    const hit = kindCache.get(full);
+    if (hit && hit.mtime === mtime) return hit.kind;
+    const text = readFileSync(full, "utf8");
+    const head = /"target"\s*:\s*"(spine|live2d)"/.exec(text.slice(0, 2048));
+    const kind = head ? (head[1] as "spine" | "live2d") : /"live2d"\s*:\s*\{/.test(text) ? "live2d" : "spine";
+    kindCache.set(full, { mtime, kind });
+    return kind;
+  };
+
   /** Model text re-targeted to live at `toFull`: image paths are rewritten relative to the new folder. */
   const retarget = (text: string, fromFull: string, toFull: string): string => {
     if (dirname(fromFull) === dirname(toFull)) return text;
@@ -370,7 +387,16 @@ export function startServer(opts: ServeOptions): Promise<{ url: string; close: (
         return json(200, { ok: true, moved, trash: rel(trash) });
       }
       case "/api/files":
-        return json(200, { root, files: listModels(), dirty: [...docs].filter(([, d]) => dirty(d)).map(([f]) => rel(f)) });
+        const files = listModels();
+        const kinds: Record<string, string> = {};
+        for (const f of files) {
+          try {
+            kinds[f] = modelKind(f);
+          } catch {
+            // unreadable: listed without a kind
+          }
+        }
+        return json(200, { root, files, kinds, dirty: [...docs].filter(([, d]) => dirty(d)).map(([f]) => rel(f)) });
       case "/api/settings":
         if (req.method === "POST" && typeof body.autosave === "boolean") settings.autosave = body.autosave;
         return json(200, { ok: true, ...settings });
@@ -519,9 +545,9 @@ export function startServer(opts: ServeOptions): Promise<{ url: string; close: (
         return json(200, { ok: true, log: res.log, warnings: res.warnings, ...info(target, docFor(target)) });
       }
       case "/api/live2d-import": {
-        // a Live2D runtime model (model3.json or moc3) becomes a new model; textures are copied to images/ beside it
+        // a Cubism Editor model (.cmo3) becomes a new model; its texture atlases are written to images/ beside it
         const target = newModelPath(body.file, body.overwrite);
-        if (typeof body.source !== "string" || !body.source) throw httpError(400, "source must be the path to a .model3.json or .moc3");
+        if (typeof body.source !== "string" || !body.source) throw httpError(400, "source must be the path to a .cmo3");
         const source = resolve(root, body.source);
         if (!existsSync(source)) throw httpError(400, `no such file: ${body.source}`);
         mkdirSync(dirname(target), { recursive: true });

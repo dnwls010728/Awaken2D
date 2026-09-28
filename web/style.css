@@ -400,6 +400,214 @@ main {
   cursor: default;
 }
 
+body[data-target="spine"] #tabs {
+  display: none;
+}
+
+body[data-target="spine"] .panel.left {
+  overflow-x: auto;
+}
+
+body[data-target="spine"] .search {
+  top: 0;
+  left: 0;
+}
+
+body[data-target="spine"] #tree {
+  width: max-content;
+  min-width: 100%;
+}
+
+.item.spine-row {
+  position: relative;
+  height: 25px;
+  padding: 0 8px 0 calc(8px + var(--depth, 0) * 16px);
+  gap: 3px;
+  border-left-color: transparent;
+}
+
+.item.spine-row:not(.spine-root)::before {
+  content: "";
+  position: absolute;
+  left: calc(15px + (var(--depth, 1) - 1) * 16px);
+  top: 0;
+  width: 9px;
+  height: 50%;
+  border-left: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  pointer-events: none;
+}
+
+.spine-row .spine-caret {
+  width: 15px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  flex: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1;
+}
+
+.spine-row .spine-caret.empty {
+  pointer-events: none;
+}
+
+.spine-row .spine-icon {
+  width: 16px;
+  flex: none;
+  text-align: center;
+  color: var(--accent);
+  font-size: 13px;
+}
+
+.spine-row .spine-name {
+  flex: none;
+  white-space: nowrap;
+}
+
+.spine-ik-links {
+  display: flex;
+  gap: 2px;
+  margin-left: auto;
+  padding-left: 8px;
+}
+
+.spine-ik-link {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #d47ae8;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.spine-ik-link:hover,
+.spine-ik-link:focus-visible {
+  background: var(--panel-3);
+  outline: 1px solid currentColor;
+  border-radius: 3px;
+}
+
+.spine-icon-picker summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.spine-icon-picker .current {
+  min-width: 20px;
+  text-align: center;
+  font-size: 18px;
+  color: var(--accent);
+}
+
+.spine-icon-picker {
+  min-width: 0;
+}
+
+/* as many columns as fit the field, so the grid never runs past the panel */
+.spine-icon-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(26px, 1fr));
+  gap: 3px;
+  margin-top: 7px;
+  max-width: 100%;
+}
+
+.spine-icon-grid button {
+  min-width: 0;
+  width: 100%;
+  aspect-ratio: 1;
+  padding: 0;
+  font-size: 16px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.spine-icon-grid button.active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.spine-row.spine-root,
+.spine-row.spine-section {
+  font-weight: 600;
+}
+
+body[data-target="spine"] .item.spine-row.spine-section {
+  position: sticky;
+  left: 0;
+  width: var(--left-w);
+  z-index: 1;
+  background: var(--panel);
+}
+
+body[data-target="spine"] .item.spine-row.spine-section:hover {
+  background: var(--panel-2);
+}
+
+.spine-row.spine-muted .spine-name {
+  color: var(--muted);
+}
+
+.spine-row .spine-count {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 400;
+}
+
+.spine-row > button.icon.small {
+  margin-left: 5px;
+  flex: none;
+}
+
+.spine-row.spine-child .dot {
+  margin-left: 19px;
+}
+
+.item.spine-row.spine-help {
+  display: block;
+  width: var(--left-w);
+  height: auto;
+  min-height: 25px;
+  padding-top: 5px;
+  padding-bottom: 5px;
+  line-height: 1.35;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-overflow: clip;
+  cursor: default;
+}
+
+.props details.spine-dark {
+  margin: 10px 0;
+  padding: 7px 9px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.props details.spine-dark summary {
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.props details.spine-dark[open] summary {
+  margin-bottom: 8px;
+}
+
+.spine-row.selected {
+  border-left-color: var(--accent);
+}
+
 /* ---------- viewport */
 
 .viewport {
@@ -522,8 +730,14 @@ main {
   color: var(--warn);
 }
 
+/* one line per parameter, Cubism style: key button | name | slider with key dots | value */
 .param-row {
-  padding: 6px 10px 8px;
+  display: grid;
+  grid-template-columns: 14px 16px minmax(48px, 1.2fr) minmax(48px, 1fr) 44px auto;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px 2px 4px;
+  min-height: 26px;
   border-bottom: 1px solid var(--line);
 }
 
@@ -531,46 +745,157 @@ main {
   background: var(--accent-soft);
 }
 
-.param-row .head {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 6px;
+.param-row .p-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   cursor: pointer;
+  font-size: 12px;
 }
 
-.param-row .value {
-  color: var(--muted);
-  font-variant-numeric: tabular-nums;
-  margin-left: auto;
+.param-row.blend .p-name {
+  font-style: italic;
 }
 
-.param-row .value.pinned {
-  color: var(--accent);
+.param-row .p-track {
+  position: relative;
+  min-width: 0;
+  height: 20px;
+  display: flex;
+  align-items: center;
 }
 
 .param-row input[type="range"] {
   width: 100%;
-  margin: 4px 0 0;
+  margin: 0;
+}
+
+.param-row .p-key {
+  position: absolute;
+  top: 50%;
+  width: 9px;
+  height: 9px;
+  min-width: 0;
+  padding: 0;
+  transform: translate(-50%, -50%);
+  border: 1.5px solid #f2cc60;
+  border-radius: 50%;
+  background: #16181c;
+  cursor: pointer;
+  z-index: 1;
+}
+
+.param-row .p-key.all {
+  width: 6px;
+  height: 6px;
+  border-width: 1px;
+  border-color: rgba(255, 255, 255, 0.55);
+  background: #2a2e35;
+  pointer-events: none;
+}
+
+.param-row .p-key.active {
+  background: #e5534b;
+  border-color: #e5534b;
+}
+
+.param-row input.value {
+  width: 100%;
+  min-width: 0;
+  padding: 1px 3px;
+  font-size: 11px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+
+.param-row input.value.pinned {
+  color: var(--accent);
 }
 
 .param-row button {
-  padding: 0 7px;
+  padding: 0 5px;
   font-size: 11px;
   flex-shrink: 0;
 }
 
-/* long names shrink (with an ellipsis) so the value and the Key button stay visible in a narrow list */
-.param-row .head > span:first-child {
-  flex: 1 1 auto;
+.param-row .l2d-key-space,
+.param-row .chain-space {
+  width: 14px;
+}
+
+.param-row .chain {
+  min-width: 0;
+  width: 14px;
+  padding: 0;
+  border: 0;
+  background: none;
+  font-size: 10px;
+  opacity: 0.25;
+  cursor: pointer;
+}
+
+.param-row .chain:hover {
+  opacity: 0.7;
+}
+
+.param-row .chain.on {
+  opacity: 1;
+}
+
+/* two linked parameters: their names and values, then one 2D area for both */
+.param-pair {
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 6px;
+}
+
+.param-pair .param-row.sub {
+  grid-template-columns: 14px 16px minmax(0, 1fr) 54px;
+  border-bottom: 0;
+  min-height: 22px;
+}
+
+.param-pair .pair-pad {
+  display: flex;
+  justify-content: center;
+  padding-top: 2px;
+}
+
+.param-pair.keyed {
+  box-shadow: inset 2px 0 0 #f2cc60;
+}
+
+.param-group {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 8px;
+  margin-top: 2px;
+  background: rgba(63, 185, 108, 0.16);
+  border-bottom: 1px solid var(--line);
+  font-weight: 600;
+  font-size: 12px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.param-group .g-name {
+  flex: 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.param-row .head .value {
-  flex-shrink: 0;
+.param-group .g-count {
+  color: var(--muted);
+  font-weight: 400;
+  font-size: 11px;
+}
+
+.param-group .caret {
+  width: 10px;
+  color: var(--muted);
 }
 
 /* ---------- timeline */
@@ -1151,9 +1476,9 @@ button.icon.small.off {
   }
 }
 
-/* ---------- combination keyforms */
+/* ---------- list section heads, linked-parameter pads */
 
-.combo-head {
+.list-head {
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -1163,58 +1488,12 @@ button.icon.small.off {
   letter-spacing: 0.05em;
 }
 
-.combo-row {
-  padding: 6px 10px 10px;
-  border-bottom: 1px solid var(--line);
-}
-
-.combo-row.selected {
-  background: var(--accent-soft);
-}
-
-.combo-row .head {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 6px;
-  cursor: pointer;
-  margin-bottom: 6px;
-}
-
-.combo-row .tag {
-  color: var(--muted);
-  font-size: 11px;
-}
-
-.combo-pad {
+.param-pad {
   display: block;
   border: 1px solid var(--line);
   border-radius: var(--radius);
   cursor: crosshair;
   touch-action: none;
-}
-
-.pad-wrap {
-  display: flex;
-  justify-content: center;
-  margin: 4px 0 8px;
-}
-
-.combo-key {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 3px 0;
-}
-
-.combo-key .at {
-  font-variant-numeric: tabular-nums;
-  min-width: 90px;
-}
-
-.combo-key .dim {
-  flex: 1;
-  font-size: 11px;
 }
 
 .remesh-info {
@@ -1233,11 +1512,9 @@ button.icon.small.off {
   border-left: 2px solid var(--accent);
 }
 
-/* what a model is made for: Spine2D or Live2D features only (models without a target show everything) */
+/* what a model is made for: Spine or Live2D features only */
 body[data-target="live2d"] .spine-only,
-body[data-target="spine"] .live2d-only,
-body[data-target="spine"] .untargeted-only,
-body[data-target="live2d"] .untargeted-only {
+body[data-target="spine"] .live2d-only {
   display: none !important;
 }
 .target-badge {
@@ -1252,7 +1529,6 @@ body[data-target="live2d"] .untargeted-only {
 }
 .target-badge.spine { background: rgba(255, 106, 61, 0.16); color: #ff9a74; border-color: rgba(255, 106, 61, 0.4); }
 .target-badge.live2d { background: rgba(88, 166, 255, 0.16); color: #8cc4ff; border-color: rgba(88, 166, 255, 0.4); }
-.target-badge.unset { background: rgba(160, 160, 160, 0.14); color: #b8bec8; border-color: rgba(160, 160, 160, 0.35); }
 
 .ctx-menu {
   position: fixed;
@@ -1276,9 +1552,32 @@ body[data-target="live2d"] .untargeted-only {
 }
 .ctx-menu button:hover { background: rgba(255, 255, 255, 0.08); }
 .ctx-menu button.danger { color: #ff7b72; }
+.ctx-menu button {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+.ctx-menu button .label { flex: 1; }
+.ctx-menu button kbd { color: var(--muted); font-size: 11px; background: none; border: 0; padding: 0; }
+.ctx-menu button:disabled { opacity: 0.4; cursor: default; }
+.ctx-menu button:disabled:hover { background: none; }
+.ctx-menu hr { width: 100%; margin: 3px 0; border: 0; border-top: 1px solid rgba(255, 255, 255, 0.12); }
 .dlg-list-item { user-select: none; }
+/* list items with a badge: the label shrinks, the badge stays on the right */
+.dlg-list-item:has(.dlg-badge) { display: flex; align-items: center; gap: 8px; }
+.dlg-item-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dlg-badge {
+  flex: none;
+  padding: 0 6px;
+  border: 1px solid;
+  border-radius: 8px;
+  font-size: 10px;
+  line-height: 16px;
+  font-weight: 600;
+}
+.dlg-badge.spine { background: rgba(255, 106, 61, 0.16); color: #ff9a74; border-color: rgba(255, 106, 61, 0.4); }
+.dlg-badge.live2d { background: rgba(88, 166, 255, 0.16); color: #8cc4ff; border-color: rgba(88, 166, 255, 0.4); }
 
-.param-group { font-weight: 600; color: var(--muted, #9aa3ad); padding-top: 8px; }
 .key-chips { display: flex; flex-wrap: wrap; gap: 4px; margin: 4px 0; }
 .key-chips .chip { padding: 2px 8px; border-radius: 10px; border: 1px solid rgba(255, 255, 255, 0.18); background: none; color: inherit; cursor: pointer; }
 .key-chips .chip.active { background: rgba(88, 166, 255, 0.25); border-color: rgba(88, 166, 255, 0.7); }
@@ -1286,24 +1585,9 @@ body[data-target="live2d"] .untargeted-only {
 .param-user .user-id { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; font-size: 12px; }
 .param-user input { min-width: 0; font-size: 12px; }
 
-.param-row .l2d-key { min-width: 22px; padding: 0 4px; color: var(--muted, #8b949e); }
+.param-row .l2d-key { min-width: 18px; padding: 0; color: var(--muted, #8b949e); }
 .param-row .l2d-key.on { color: #f2cc60; }
 .param-row.keyed { box-shadow: inset 2px 0 0 #f2cc60; }
-.key-strip { position: relative; height: 12px; margin: 0 7px; }
-.key-strip .key-dot {
-  position: absolute;
-  top: 1px;
-  width: 10px;
-  height: 10px;
-  min-width: 0;
-  padding: 0;
-  transform: translateX(-50%) rotate(45deg);
-  border: 1px solid #f2cc60;
-  border-radius: 1px;
-  background: #16181c;
-  cursor: pointer;
-}
-.key-strip .key-dot.active { background: #f2cc60; }
 .l2d-keyrow { padding: 4px 0 6px; border-bottom: 1px solid rgba(255, 255, 255, 0.06); }
 .l2d-keyrow .head { display: flex; justify-content: space-between; align-items: center; gap: 6px; }
 .l2d-keyrow .head span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1754,4 +2038,243 @@ input.wnum {
   margin: 8px auto;
   background: repeating-conic-gradient(#3a3f47 0 25%, #2b2f36 0 50%) 50% / 16px 16px;
   border-radius: var(--radius);
+}
+
+/* ---------- Live2D display toggles (viewport, top right) */
+
+.l2d-show {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  background: rgba(23, 25, 29, 0.85);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.l2d-show button {
+  width: 28px;
+  height: 26px;
+  padding: 4px;
+  border: 0;
+  background: transparent;
+  display: grid;
+  place-items: center;
+  opacity: 0.35;
+}
+
+.l2d-show button svg {
+  width: 18px;
+  height: 18px;
+}
+
+.l2d-show button.on {
+  opacity: 1;
+  background: var(--panel-3);
+}
+
+.l2d-show .sep {
+  width: 1px;
+  margin: 3px 2px;
+  background: var(--line);
+}
+
+.l2d-show button:disabled {
+  opacity: 0.15;
+  cursor: not-allowed;
+}
+
+/* ---------- Live2D parts / deformers tree */
+
+.tree-kinds {
+  margin: 0 8px 6px;
+  width: fit-content;
+}
+
+.tree-mode {
+  display: flex;
+  gap: 2px;
+  padding: 4px 8px 6px;
+}
+
+.tree-mode button {
+  flex: 1;
+  padding: 3px 6px;
+  font-size: 12px;
+}
+
+.tree-mode button.active {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.item.l2row {
+  padding: 0 8px 0 0;
+  gap: 2px;
+  height: 24px;
+}
+
+.l2row .label {
+  width: 4px;
+  align-self: stretch;
+  flex: none;
+  margin-right: 2px;
+}
+
+.l2row .eye,
+.l2row .lock {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  display: grid;
+  place-items: center;
+  flex: none;
+}
+
+.l2row .eye.off,
+.l2row .lock:not(.on) {
+  opacity: 0.35;
+}
+
+.l2row .lock.on {
+  color: var(--warn);
+}
+
+/* the whole row height and a bit more width, so the fold arrow is easy to hit */
+.l2row .caret {
+  width: 18px;
+  align-self: stretch;
+  flex: none;
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  font-size: 10px;
+  cursor: pointer;
+  border-radius: 3px;
+}
+
+.l2row .caret:empty {
+  cursor: default;
+}
+
+.l2row .caret:not(:empty):hover {
+  color: var(--text, #e6e8eb);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.l2row .ico {
+  width: 16px;
+  flex: none;
+  text-align: center;
+  font-size: 12px;
+}
+
+.l2row .name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.l2row.dim .name {
+  opacity: 0.45;
+}
+
+.l2row .order {
+  margin-left: auto;
+  padding-left: 8px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.label-swatches {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.label-swatches button {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border-radius: 4px;
+}
+
+.label-swatches button.active {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* Live2D: the parts list above, the deformer list below, each scrolling on its own */
+.panel.left:has(.l2d-split) {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.panel.left:has(.l2d-split) #tree {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding-bottom: 0;
+}
+
+.l2d-split {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.l2d-list {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-top: 1px solid var(--line);
+}
+
+.l2d-list.parts {
+  flex: 3;
+}
+
+.l2d-list.deformers {
+  flex: 2;
+}
+
+.l2d-list-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 2px 6px 2px 10px;
+  min-height: 24px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  background: var(--panel);
+}
+
+.l2d-list-head .adds {
+  display: flex;
+  gap: 2px;
+  text-transform: none;
+}
+
+.l2d-list-head .adds button {
+  min-width: 0;
+  padding: 0 5px;
+  font-size: 11px;
+}
+
+.l2d-list-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  overflow-x: hidden;
 }

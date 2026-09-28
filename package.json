@@ -15,7 +15,7 @@
     "example": "node --disable-warning=ExperimentalWarning examples/make-mascot.ts",
     "example:psd": "node --disable-warning=ExperimentalWarning examples/make-psd.ts",
     "editor": "node --disable-warning=ExperimentalWarning src/cli/main.ts serve",
-    "example:character": "npm run example:psd && node --disable-warning=ExperimentalWarning src/cli/main.ts import examples/psd-demo/character.psd examples/psd-demo/character.rig.json --target none --propose --ik --physics --force && node --disable-warning=ExperimentalWarning src/cli/main.ts apply examples/psd-demo/character.rig.json examples/psd-demo/animate.ops.json && node --disable-warning=ExperimentalWarning src/cli/main.ts apply examples/psd-demo/character.rig.json examples/psd-demo/face.ops.json"
+    "example:character": "npm run example:psd && node --disable-warning=ExperimentalWarning src/cli/main.ts import examples/psd-demo/character.psd examples/psd-demo/character.rig.json --target spine --propose --ik --physics --force && node --disable-warning=ExperimentalWarning src/cli/main.ts apply examples/psd-demo/character.rig.json examples/psd-demo/animate.ops.json"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

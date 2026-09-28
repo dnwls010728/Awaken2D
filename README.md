@@ -17,7 +17,7 @@ the result. People work on the same file in a web editor. Spine and Live2D data 
 - [Spine](#spine)
 - [Editor](#editor)
 - [MCP](#mcp)
-- [Demo character (bones, IK, spring bones)](#demo-character-bones-ik-spring-bones)
+- [Demo character (bones, IK, physics)](#demo-character-bones-ik-physics)
 - [Layout](#layout)
 - [Roadmap](#roadmap)
 
@@ -27,7 +27,7 @@ the result. People work on the same file in a web editor. Spine and Live2D data 
 |---|---|
 | **Text model format** | `*.rig.json` holds bones, slots, weighted meshes, parameters and animations. It diffs cleanly and is documented in [docs/FORMAT.md](docs/FORMAT.md) (`rig spec` prints it). |
 | **Declarative ops** | Every edit is an op, applied atomically with precise error messages. For example, `addBone` takes world `start`/`end` points, `addMesh` builds a mesh from a rect, ellipse or polygon and weights it automatically, and `setKeys` keys an animation. The CLI, MCP server and editor all use the same ops. |
-| **Headless renderer** | A deterministic software rasterizer writes PNGs. It can draw bone, name, mesh and warp overlays, contact sheets of an animation, and parameter sheets, so an agent can look at its own work. |
+| **Headless renderer** | A deterministic software rasterizer writes PNGs. It can draw bone, name, mesh, deformer and glue overlays, contact sheets of an animation, and parameter sheets, so an agent can look at its own work. |
 | **Validator** | Checks the structure, then samples every animation for folding triangles and NaNs. |
 | **Two targets** | A model is either a Spine model (bones, weights, skins, constraints) or a Live2D model (parameters, keyforms, deformers, parts). Ops for the other kind are refused, and the editor only shows that kind's tools. |
 | **Spine interop** | Imports Spine 3.8/4.x exports and writes them back. Poses match the official Spine 4.3 runtime, and a round trip without edits gives back the original data. |
@@ -99,23 +99,34 @@ To rebuild existing meshes, use `rig remesh <model> --all --plan`. In the editor
 ## Live2D
 
 ```bash
-npm run rig -- live2d-import model/name.model3.json out/name.rig.json
+npm run rig -- live2d-import model/name.cmo3 out/name.rig.json
 npm run rig -- live2d-export out/name.rig.json export/
 ```
 
-- **Import** reads a Cubism runtime model: model3.json + moc3, textures, motions, physics3, pose3 and display
-  info (cdi3).
-- **Evaluation** matches Cubism exactly. Awaken2D keeps Cubism's keyforms, warp and rotation deformers, parts, glue
-  and draw-order groups, and poses like the official Cubism Core; tools compare them frame by frame. Motions,
-  physics and pose fades play like the Cubism Framework.
+- **Import** reads the Cubism Editor model (.cmo3): parameters, parts, deformers, art meshes, glue, blend shapes,
+  deformation paths, physics, names, hidden / locked objects and the texture atlases, plus the motions of the
+  animation files (.can3) next to it.
+- **Evaluation** matches Cubism exactly. Awaken2D keeps Cubism's keyforms, blend shapes (4.2+), warp and rotation
+  deformers, parts, glue and draw-order groups, and poses like the official Cubism Core; tools compare them frame by
+  frame. Motions, physics and pose fades play like the Cubism Framework.
 - **Editing** works Cubism style:
   1. Select an art mesh.
   2. ◇ in the Params list adds min / default / max keys.
   3. Click a key dot under a slider, then shape the mesh with the gizmo or its vertices.
-- **Combinations**: an object keyed on two or three parameters (for example AngleX × AngleY) gets a 2D pad and a
-  keyform chip per grid point.
+  4. Deformers work the same way: select a warp deformer and drag its lattice points (or transform a selection with
+     Move / Rotate / Scale); select a rotation deformer and drag its centre or its handle.
+  5. The panel of a selected object lists its keys and the keyform at the pinned sliders: draw order, multiply /
+     screen color and opacity, a rotation deformer's angle, scale and reflection, a glue's intensity. ＋ on the Parts
+     and Deformers lists makes a part, or a warp / rotation deformer around the selected object.
+- **Combinations**: key an object on two or three parameters (◇ on each) and it gets a keyform at every combination
+  of their keys. The chain link beside a parameter joins it with the next one into a 2D control (like AngleX × AngleY
+  in Cubism); the selected object's keyforms show as red points in it.
+- **Parts and Deformers lists**: right-click a row to expand or collapse it (or all), show / hide, lock, rename or
+  delete it, or add a part or a warp / rotation deformer around it.
 - **Parameter sheets** show what a parameter does:
   `rig param-sheet <model> --param ParamAngleX --param2 ParamAngleY --steps 3`.
+
+![a Live2D model in the editor: parameter groups and the body_sway motion](docs/editor-live2d-en.png)
 
 ![ParamAngleX x ParamAngleY](docs/service-angle.png)
 
@@ -143,10 +154,20 @@ npm run rig -- spine-export out/skeleton.rig.json export/
 - **Exact round trip**: data you did not edit is written back exactly as it was imported.
 - **Event sounds**:
   - Sounds play in the editor; 🔇 mutes them.
-  - The Events tab shows which events have sounds.
+  - The Events section of the tree shows which events have sounds.
   - *Choose sound file…* copies a wav/ogg/mp3 next to the model and links it to the event.
   - Export copies the sounds too.
 - **Region attachments** stay quads, exactly as in Spine. `--mesh auto` turns them into automatic meshes.
+- **Editor tree**, like Spine's: the skeleton (bones, slots and attachments), then Constraints, Draw Order, Skins,
+  Events, Animations, Images and Audio.
+  - Right-click a row: expand / collapse (or all), rename, duplicate, delete, add a new item, activate a skin, show
+    or hide a slot's attachment.
+  - Constraints, draw order, skins, events and animations go in folders. As in Spine, the folder is part of the name
+    (`accessories/bag`). Right-click a section for *New folder…*, an item for *Move to folder…*, and a folder to
+    rename it, move its contents out or delete it.
+  - Bones take Spine's bone icons. With an animation open, the panels key IK mix / bend, draw order and deforms.
+
+![a Spine model in the editor: the tree, a bone's properties and the walk animation](docs/editor-spine-en.png)
 
 ## Editor
 
@@ -157,12 +178,10 @@ npm run editor
 Open http://127.0.0.1:5178/. To edit models in another folder, add `-- --root <folder>`. The server only listens
 on localhost and only reads and writes files under the root.
 
-![editor with a Live2D model, parameters and the motion timeline](docs/editor-en.png)
-
 **Files and saving**
 - Open a file from the file name in the header, or with File › Open (Ctrl+O). The File menu also imports and
   exports Spine / Live2D and has Save (Ctrl+S), Save As (Ctrl+Shift+S; image paths are rewritten for the new
-  folder) and Revert to Saved. Right-click a model in the Open list to delete it. It moves to `.awaken2d-trash/`
+  folder) and Revert to Saved. The Open list marks each model Spine or Live2D; right-click one to delete it. It moves to `.awaken2d-trash/`
   together with the images only it used.
 - Edits go to a working copy on the server until you save. ● marks unsaved files, and the working copy survives
   a page reload. *Auto-save every edit* (or `serve --autosave`) writes each edit straight to disk instead.
@@ -178,8 +197,8 @@ on localhost and only reads and writes files under the root.
     for uniform scale.
   - New bone `B`: drag from joint to tip. The dialog offers to bind the meshes under the new bone. Hold Shift to
     snap.
-- Meshes follow bones (`T`). When this is on, moving a bone in Setup carries the art bound to it. Turn it off to
-  fit the skeleton to the art.
+- Compensation, like Spine (Setup only): image compensation (`T`) leaves the images in place when a bone moves, to
+  fit the skeleton to the art; bone compensation (`Shift+T`) leaves the child bones in place.
 - In Setup (no animation selected), edits change the rest pose. With an animation selected, edits key at the
   playhead, and `K` keys the selected bone's current pose.
 - Timeline (dope sheet):
@@ -197,7 +216,9 @@ on localhost and only reads and writes files under the root.
   - *Auto…* is the importer's automatic mesh, with adjustable role and density.
   - *Trace…* traces an outline around the art. *Generate* fills the outline with evenly spaced vertices.
   - *Reset* goes back to the image rectangle.
-  - All of these are previewed live. Weights, blend shapes and combination shapes carry over.
+  - All of these are previewed live. Weights, keyforms and deform keys carry over.
+  - With a Spine animation open, dragging vertices keys the deform at the playhead instead (like Spine's Animate
+    mode); the slot's Forward / Back buttons key the draw order, and an IK constraint's panel keys its mix and bend.
 - Live2D art meshes in Mesh mode, Cubism style:
   - *Shape keyform* shapes the mesh at the pinned keys.
   - *Edit mesh* changes the mesh itself; every keyform follows. It includes *Auto mesh…* (Cubism's Automatic Mesh
@@ -209,7 +230,7 @@ on localhost and only reads and writes files under the root.
   - A heatmap shows the chosen bone's weights, and a pie overlay shows every bone at each vertex.
 
 **General**
-- Rename with F2. Delete with Shift+Del, after a confirmation; deleting a bone hands its children and weights to
+- Right-click a row of the hierarchy for its actions. Rename with F2. Delete with Shift+Del, after a confirmation; deleting a bone hands its children and weights to
   its parent.
 - Undo and redo (Ctrl+Z / Ctrl+Shift+Z) cover edits made outside the editor too, so you can undo an agent's
   change from the UI.
@@ -242,24 +263,23 @@ A typical agent loop:
 5. `rig_sheet`
 6. Repeat from step 3.
 
-## Demo character (bones, IK, spring bones)
+## Demo character (bones, IK, physics)
 
-`npm run example:character` rebuilds a demo that uses the untargeted features: it paints a PSD, imports it with a
-proposed skeleton, and adds IK, springs, animations and a face rig. The model has no target, because spring bones
-export to neither Spine nor Live2D.
+`npm run example:character` rebuilds a Spine demo: it paints a PSD, imports it with a proposed skeleton, and adds IK,
+physics and animations.
 
 ```bash
-npm run rig -- import examples/psd-demo/character.psd out/character.rig.json --target none --propose --ik --physics
+npm run rig -- import examples/psd-demo/character.psd out/character.rig.json --target spine --propose --ik --physics
 ```
 
 - **IK** (`--ik`): arms and legs get two-bone IK. Drop the hip and the feet stay planted; key a hand target in
   world coordinates and the arm follows ([animate.ops.json](examples/psd-demo/animate.ops.json)).
 
   ![IK crouch and reach](docs/ik-crouch.png)
-- **Spring bones** (`--physics`): the tail becomes a 3-bone damped-spring chain. Nothing keys it; it swings from the
-  hip motion. Frequency, damping, gravity, inertia, angle limit and wind can all be set, and wind can be keyed.
+- **Physics** (`--physics`): the tail becomes a 3-bone chain with a Spine physics constraint on each bone. Nothing
+  keys it; it sways from the hip motion. Inertia, strength, damping, mass, wind and gravity can be set and keyed.
 
-  ![spring tail](docs/physics-crouch.png)
+  ![swaying tail](docs/physics-crouch.png)
 
 ## Layout
 
@@ -282,8 +302,7 @@ examples     make-mascot.ts builds a character purely from ops; make-psd.ts pain
 - [x] Format, runtime, headless renderer, CLI, MCP server
 - [x] Art import (PSD / layered PNG), skeleton proposal, automatic meshes
 - [x] Web editor with live reload of agent edits, undo, localized UI
-- [x] Live2D-style parameters, combination keyforms, IK, spring bones
+- [x] Live2D parameters with linked 2D controls, IK, physics
 - [x] Spine import/export: every constraint type, skins, events and sounds, bounding boxes
 - [x] Live2D import/export: moc3, keyforms and deformers, motions, physics, pose
 - [ ] Runtime players (web, Unity/Godot)
-- [ ] Spring-bone collision

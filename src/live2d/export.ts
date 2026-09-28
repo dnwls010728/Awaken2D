@@ -1,9 +1,9 @@
 // Awaken2D model -> Live2D runtime data: moc3 (binary) + model3 / motion3 / physics3 / cdi3 / pose3 JSON. Pure.
 // The Live2D rig (keyforms, deformers, parts, glue, draw-order groups) is written as it is; meshes without Live2D
-// keyforms become static art meshes at their setup shape. Bones, slot timelines and spring bones have no Live2D
+// keyforms become static art meshes at their setup shape. Bones and slot timelines have no Live2D
 // counterpart and are reported.
 import { isChannelEases } from "../core/animation.ts";
-import type { Animation, Deformer, DrawOrderGroup, Ease, Key, KeyformGrid, MeshAttachment, Model, Part } from "../core/types.ts";
+import type { Animation, Deformer, DrawOrderGroup, Ease, Key, KeyformGrid, Live2DBlendShape, Live2DBlendShapeConstraint, MeshAttachment, Model, Part } from "../core/types.ts";
 import { COUNT_NAMES, fieldsFor } from "./moc3.ts";
 import type { CountName, Moc3Array, Moc3Data, Moc3Version } from "./moc3.ts";
 import { live2dMeta } from "./import.ts";
@@ -53,7 +53,10 @@ export function exportLive2DData(model: Model, opts: { name: string; version?: M
   // ---- art meshes: every slot whose setup attachment is a mesh, in the moc3's original order when known
   const slotOf = new Map<string, string>(); // attachment -> slot
   for (const s of model.slots) if (s.attachment && !slotOf.has(s.attachment)) slotOf.set(s.attachment, s.id);
-  const meshIds = [...slotOf.keys()].filter((a) => model.attachments[a]?.type === "mesh");
+  // hidden art meshes are left out, like the Cubism Editor's export (the runtime would draw them: it has no visible flag)
+  const meshIds = [...slotOf.keys()].filter((a) => model.attachments[a]?.type === "mesh" && !model.attachments[a].live2d?.hidden);
+  const hiddenMeshes = [...slotOf.keys()].filter((a) => model.attachments[a]?.type === "mesh" && model.attachments[a].live2d?.hidden);
+  if (hiddenMeshes.length) warnings.push(`${hiddenMeshes.length} hidden art mesh(es) left out: ${hiddenMeshes.join(", ")}`);
   const order = meta.meshOrder ?? [];
   const rank = new Map(order.map((id, i) => [id, i]));
   meshIds.sort((a, b) => (rank.get(a) ?? Infinity) - (rank.get(b) ?? Infinity));
@@ -121,7 +124,10 @@ export function exportLive2DData(model: Model, opts: { name: string; version?: M
   const hasColors =
     rig.deformers.some((d) => d.forms.some((f) => f.multiply || f.screen)) ||
     meshIds.some((id) => model.attachments[id].live2d?.forms.some((f) => f.multiply || f.screen));
-  const needs: Moc3Version = hasColors ? 4 : warps.some((w) => w.bilinear) ? 2 : 1;
+  const hasBlendShapes = params.some((p) => p.blendShape);
+  // blend shapes need 5.0: it keeps colors per keyform (4.2 keeps one color run per object, which the appended
+  // blend-shape forms cannot join)
+  const needs: Moc3Version = hasBlendShapes ? 5 : hasColors ? 4 : warps.some((w) => w.bilinear) ? 2 : 1;
   const version = Math.max(opts.version ?? meta.mocVersion ?? 3, needs) as Moc3Version;
   const colorsPerKeyform = version >= 5;
 
@@ -140,6 +146,9 @@ export function exportLive2DData(model: Model, opts: { name: string; version?: M
     }
     return i;
   };
+
+  /** Blend-shape parameter -> its blend-shape parameter binding. */
+  const bsParamBinding = new Map<string, number>();
 
   // parameters and their bindings (grouped per parameter, in parameter order)
   const pbIndex = new Map<string, number>();
@@ -169,14 +178,22 @@ export function exportLive2DData(model: Model, opts: { name: string; version?: M
   }
   if (version >= 4) {
     // per-parameter key list (all keys the parameter is keyed at)
+    let bsBinding = 0;
     params.forEach((p) => {
-      const all = [...new Set([...(pbByParam.get(p.id)?.values() ?? [])].flat())].sort((a, b) => a - b);
+      const all = [...new Set([...[...(pbByParam.get(p.id)?.values() ?? [])].flat(), ...(p.blendShape?.keys ?? [])])].sort((a, b) => a - b);
       push("parameterExt.keysBegin", keysPool.length);
       push("parameterExt.keysCount", all.length);
       keysPool.push(...all);
-      push("parameter.type", 0);
-      push("parameter.blendShapeBindingBegin", 0);
-      push("parameter.blendShapeBindingCount", 0);
+      push("parameter.type", p.blendShape ? 1 : 0);
+      push("parameter.blendShapeBindingBegin", p.blendShape ? bsBinding : 0);
+      push("parameter.blendShapeBindingCount", p.blendShape ? 1 : 0);
+      if (p.blendShape) {
+        bsParamBinding.set(p.id, bsBinding++);
+        push("blendShapeParameterBinding.keysBegin", keysPool.length);
+        push("blendShapeParameterBinding.keysCount", p.blendShape.keys.length);
+        push("blendShapeParameterBinding.baseKey", p.blendShape.base);
+        keysPool.push(...p.blendShape.keys);
+      }
     });
   }
 
@@ -337,6 +354,135 @@ export function exportLive2DData(model: Model, opts: { name: string; version?: M
     glueInfo += g.pairs.length;
   });
 
+  // blend shapes: their forms go after every object's regular keyforms, one keyform binding per (object, parameter)
+  const bs = { keyformBindings: 0, constraints: 0, constraintIndices: 0, constraintValues: 0, meshes: 0, warps: 0, rotations: 0, parts: 0, glue: 0 };
+  if (hasBlendShapes) {
+    const constraintIndex = new Map<string, number>();
+    const constraintOf = (c: Live2DBlendShapeConstraint): number => {
+      const key = `${c.param}\u0000${JSON.stringify(c.values)}`;
+      let i = constraintIndex.get(key);
+      if (i === undefined) {
+        if (!paramIndex.has(c.param)) throw new Error(`blend-shape constraint uses unknown parameter "${c.param}"`);
+        i = bs.constraints++;
+        constraintIndex.set(key, i);
+        push("blendShapeConstraint.parameter", paramIndex.get(c.param)!);
+        push("blendShapeConstraint.valueBegin", bs.constraintValues);
+        push("blendShapeConstraint.valueCount", c.values.length);
+        for (const [k, w] of c.values) {
+          push("blendShapeConstraintValue.key", k);
+          push("blendShapeConstraintValue.weight", w);
+        }
+        bs.constraintValues += c.values.length;
+      }
+      return i;
+    };
+    /** Writes one object's blend shapes (`form` appends a form and counts it); returns [bindingBegin, bindingCount]. */
+    const shapes = <F,>(list: Live2DBlendShape<F>[], next: () => number, form: (f: F) => void): [number, number] => {
+      const begin = bs.keyformBindings;
+      for (const sh of list) {
+        const pb = bsParamBinding.get(sh.param);
+        if (pb === undefined) throw new Error(`blend shape on "${sh.param}", which is not a blend-shape parameter`);
+        push("blendShapeKeyformBinding.parameterBinding", pb);
+        push("blendShapeKeyformBinding.keyformBegin", next());
+        push("blendShapeKeyformBinding.keyformCount", sh.forms.length);
+        push("blendShapeKeyformBinding.constraintBegin", bs.constraintIndices);
+        push("blendShapeKeyformBinding.constraintCount", sh.constraints?.length ?? 0);
+        for (const c of sh.constraints ?? []) push("blendShapeConstraintIndices", constraintOf(c));
+        bs.constraintIndices += sh.constraints?.length ?? 0;
+        for (const f of sh.forms) form(f);
+        bs.keyformBindings++;
+      }
+      return [begin, bs.keyformBindings - begin];
+    };
+    /** Color differences of a blend-shape form (0 = no change). */
+    const deltaColor = (f: { multiply?: number[]; screen?: number[] }) => {
+      const i = mul[0].length;
+      for (let c = 0; c < 3; c++) {
+        mul[c].push(f.multiply?.[c] ?? 0);
+        scr[c].push(f.screen?.[c] ?? 0);
+      }
+      return i;
+    };
+    warps.forEach((d, wi) => {
+      if (!d.blendShapes?.length) return;
+      const vc = (d.cols + 1) * (d.rows + 1);
+      const [b, n] = shapes(d.blendShapes, () => warpKf, (f) => {
+        push("warpKeyform.opacity", f.opacity ?? 0);
+        push("warpKeyform.positionBegin", positions.length);
+        for (let q = 0; q < vc * 2; q++) positions.push(f.points[q] ?? 0);
+        const ci = deltaColor(f);
+        push("warpKeyform.multiplyBegin", ci);
+        push("warpKeyform.screenBegin", ci);
+        warpKf++;
+      });
+      push("blendShapeWarp.target", wi);
+      push("blendShapeWarp.bindingBegin", b);
+      push("blendShapeWarp.bindingCount", n);
+      bs.warps++;
+    });
+    meshIds.forEach((id, mi) => {
+      const l = model.attachments[id].live2d;
+      if (!l?.blendShapes?.length) return;
+      const vc = model.attachments[id].vertices.length;
+      const [b, n] = shapes(l.blendShapes, () => meshKf, (f) => {
+        push("artMeshKeyform.opacity", f.opacity ?? 0);
+        push("artMeshKeyform.drawOrder", f.drawOrder ?? 0);
+        push("artMeshKeyform.positionBegin", positions.length);
+        for (let q = 0; q < vc * 2; q++) positions.push(f.points[q] ?? 0);
+        const ci = deltaColor(f);
+        push("artMeshKeyform.multiplyBegin", ci);
+        push("artMeshKeyform.screenBegin", ci);
+        meshKf++;
+      });
+      push("blendShapeArtMesh.target", mi);
+      push("blendShapeArtMesh.bindingBegin", b);
+      push("blendShapeArtMesh.bindingCount", n);
+      bs.meshes++;
+    });
+    parts.forEach((p, pi) => {
+      if (!p.blendShapes?.length) return;
+      const [b, n] = shapes(p.blendShapes, () => partKf, (f) => {
+        push("partKeyform.drawOrder", f);
+        partKf++;
+      });
+      push("blendShapePart.target", pi);
+      push("blendShapePart.bindingBegin", b);
+      push("blendShapePart.bindingCount", n);
+      bs.parts++;
+    });
+    rots.forEach((d, ri) => {
+      if (!d.blendShapes?.length) return;
+      const [b, n] = shapes(d.blendShapes, () => rotKf, (f) => {
+        push("rotationKeyform.opacity", f.opacity ?? 0);
+        push("rotationKeyform.angle", f.angle ?? 0);
+        push("rotationKeyform.x", f.x ?? 0);
+        push("rotationKeyform.y", f.y ?? 0);
+        push("rotationKeyform.scale", f.scale ?? 0);
+        push("rotationKeyform.reflectX", 0);
+        push("rotationKeyform.reflectY", 0);
+        const ci = deltaColor(f);
+        push("rotationKeyform.multiplyBegin", ci);
+        push("rotationKeyform.screenBegin", ci);
+        rotKf++;
+      });
+      push("blendShapeRotation.target", ri);
+      push("blendShapeRotation.bindingBegin", b);
+      push("blendShapeRotation.bindingCount", n);
+      bs.rotations++;
+    });
+    glue.forEach((g, gi) => {
+      if (!g.blendShapes?.length) return;
+      const [b, n] = shapes(g.blendShapes, () => glueKf, (f) => {
+        push("glueKeyform.intensity", f);
+        glueKf++;
+      });
+      push("blendShapeGlue.target", gi);
+      push("blendShapeGlue.bindingBegin", b);
+      push("blendShapeGlue.bindingCount", n);
+      bs.glue++;
+    });
+  }
+
   // draw-order groups
   const groups: DrawOrderGroup[] = rig.drawOrderGroups?.length
     ? rig.drawOrderGroups
@@ -407,6 +553,20 @@ export function exportLive2DData(model: Model, opts: { name: string; version?: M
     glueInfo,
     glueKeyforms: glueKf,
     ...(version >= 4 ? { keyformMultiplyColors: mul[0].length, keyformScreenColors: scr[0].length } : {}),
+    ...(hasBlendShapes
+      ? {
+          blendShapeParameterBindings: bsParamBinding.size,
+          blendShapeKeyformBindings: bs.keyformBindings,
+          blendShapesWarpDeformers: bs.warps,
+          blendShapesArtMeshes: bs.meshes,
+          blendShapeConstraintIndices: bs.constraintIndices,
+          blendShapeConstraints: bs.constraints,
+          blendShapeConstraintValues: bs.constraintValues,
+          blendShapesParts: bs.parts,
+          blendShapesRotationDeformers: bs.rotations,
+          blendShapesGlue: bs.glue,
+        }
+      : {}),
   });
   const arrays: Record<string, Moc3Array> = {};
   for (const f of fieldsFor(version)) {
@@ -469,10 +629,6 @@ export function exportLive2DData(model: Model, opts: { name: string; version?: M
     ...(meta.layout ? { Layout: meta.layout } : {}),
   };
   if (model.bones.length > 1) warnings.push(`${model.bones.length - 1} bone(s) are not exported (Live2D has no bones; use deformers)`);
-  if (model.physics?.length) warnings.push("spring bones are not exported (use Live2D physics3 settings)");
-  if (model.warps?.length || model.combos?.length || params.some((p) => p.bones || p.slots || p.meshes || p.warps)) {
-    warnings.push("Awaken2D parameter effects (bone offsets, blend shapes, warps, combos) are not exported; only Live2D keyforms are");
-  }
   const pose = rig.pose?.groups.length
     ? { Type: "Live2D Pose", ...(rig.pose.fadeIn !== undefined ? { FadeInTime: rig.pose.fadeIn } : {}), Groups: rig.pose.groups.map((g) => g.map((p) => ({ Id: p.part, Link: p.link ?? [] }))) }
     : undefined;
@@ -512,15 +668,22 @@ function easeBezier(e: Ease | undefined): [number, number, number, number] | nul
   return e;
 }
 
-function curveSegments(keys: Key<number>[], before: number): number[] {
-  // keys at the loop end are the loop closure Cubism adds by itself
-  const ks = keys.filter((k) => k.t < before - 1e-6);
+/**
+ * One curve's Segments. For a loop, `loopEnd` is the animation's end and `duration` the file's Duration (one frame
+ * earlier): the Framework closes the loop by itself, linearly from the last point to the first value over that frame.
+ * A key at the loop end therefore becomes a point at Duration (the curve cut there), like Cubism Editor writes it, and
+ * every curve gets at least one segment (the Cubism Viewer fails on single-point curves).
+ */
+function curveSegments(keys: Key<number>[], loopEnd: number, duration: number): number[] {
+  const ks = keys.filter((k) => k.t < loopEnd - 1e-6);
   if (!ks.length) return [];
+  const r = (n: number) => Math.round(n * 1e7) / 1e7;
+  const easeOf = (k: Key<number>) => (isChannelEases(k.ease) ? k.ease[0] : (k.ease as Ease | undefined));
   const seg: number[] = [ks[0].t, ks[0].v];
   for (let i = 0; i + 1 < ks.length; i++) {
     const a = ks[i];
     const b = ks[i + 1];
-    const ease = isChannelEases(a.ease) ? a.ease[0] : (a.ease as Ease | undefined);
+    const ease = easeOf(a);
     if (Math.abs(b.t - a.t) < 1e-9) {
       // a jump at one time: inverse stepped to the key after it, or a stepped jump
       const c = ks[i + 2];
@@ -541,9 +704,41 @@ function curveSegments(keys: Key<number>[], before: number): number[] {
     }
     const dt = b.t - a.t;
     const dv = b.v - a.v;
-    const r = (n: number) => Math.round(n * 1e7) / 1e7;
     seg.push(1, r(a.t + bz[0] * dt), r(a.v + bz[1] * dv), r(a.t + bz[2] * dt), r(a.v + bz[3] * dv), b.t, b.v);
   }
+  const last = ks[ks.length - 1];
+  const next = keys.find((k) => k.t >= loopEnd - 1e-6);
+  if (next && last.t < duration - 1e-6 && next.t > last.t) {
+    // the segment towards the loop end, cut at Duration
+    const ease = easeOf(last);
+    const bz = easeBezier(ease);
+    if (ease === "stepped") seg.push(2, duration, last.v);
+    else if (!bz) seg.push(0, duration, r(last.v + ((next.v - last.v) * (duration - last.t)) / (next.t - last.t)));
+    else {
+      const dt = next.t - last.t;
+      const dv = next.v - last.v;
+      const p = [
+        [last.t, last.v],
+        [last.t + bz[0] * dt, last.v + bz[1] * dv],
+        [last.t + bz[2] * dt, last.v + bz[3] * dv],
+        [next.t, next.v],
+      ];
+      const at = (u: number, k: 0 | 1) => (1 - u) ** 3 * p[0][k] + 3 * (1 - u) ** 2 * u * p[1][k] + 3 * (1 - u) * u * u * p[2][k] + u ** 3 * p[3][k];
+      let lo = 0;
+      let hi = 1;
+      for (let n = 0; n < 60; n++) {
+        const mid = (lo + hi) / 2;
+        if (at(mid, 0) < duration) lo = mid;
+        else hi = mid;
+      }
+      const u = (lo + hi) / 2;
+      const L = (q: number[], w: number[]) => [q[0] + (w[0] - q[0]) * u, q[1] + (w[1] - q[1]) * u];
+      const p01 = L(p[0], p[1]);
+      const p012 = L(p01, L(p[1], p[2]));
+      seg.push(1, r(p01[0]), r(p01[1]), r(p012[0]), r(p012[1]), duration, r(at(u, 1)));
+    }
+  }
+  if (seg.length === 2 && duration > seg[0] + 1e-6) seg.push(0, duration, seg[1]);
   return seg;
 }
 
@@ -571,7 +766,7 @@ function animationToMotion(model: Model, anim: Animation, m: NonNullable<ReturnT
   const curves: Json[] = [];
   const fades = (m?.curveFades ?? {}) as Record<string, { fadeIn?: number; fadeOut?: number }>;
   const add = (target: string, id: string, keys: Key<number>[]) => {
-    const seg = curveSegments(keys, loop ? anim.duration : Infinity);
+    const seg = curveSegments(keys, loop ? anim.duration : Infinity, duration);
     if (!seg.length) return;
     const c: Json = { Target: target, Id: id };
     const f = fades[`${target}/${id}`];
@@ -673,9 +868,11 @@ function displayInfoJson(model: Model, prev: Json): Json {
   for (const g of groupIds) if (!groups.some((x) => x.Id === g)) groups.push({ Id: g, GroupId: "", Name: g });
   if (groups.length) out.ParameterGroups = groups;
   out.Parts = (model.live2d?.parts ?? []).map((p) => ({ Id: p.id, Name: p.name ?? p.id }));
-  const params = new Set((model.parameters ?? []).map((p) => p.id));
-  const combined = (prev?.CombinedParameters ?? []).filter((c: Json) => (c.Ids ?? []).every((id: string) => params.has(id)));
+  // linked pairs: a parameter with `combined` and the one after it
+  const list = model.parameters ?? [];
+  const combined = list.flatMap((p, i) => (p.combined && list[i + 1] ? [[p.id, list[i + 1].id]] : []));
   if (combined.length) out.CombinedParameters = combined;
+  void prev;
   return out;
 }
 

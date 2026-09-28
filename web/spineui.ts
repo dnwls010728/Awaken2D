@@ -1,10 +1,10 @@
-// Spine-side panels of the editor: the Constraints, Skins, Events and Images tabs (tree rows and property panels),
+// Spine-side panels of the editor: Constraints, Skins, Events, Images and Audio tree rows and property panels,
 // the new-constraint dialog, bone inherit / skin fields and the path-attachment overlay. Everything edits through
 // ops (setConstraint / updateConstraint / setSkinAttachment / setEvent ...), like the rest of the editor.
 import { constraintList } from "../src/core/index.ts";
 import type { DrawItem, PosedBoundingBox, IkConstraint, Model, Op, PathConstraint, Pose, Slider, SpinePhysics, TransformConstraint, TransformProperty, Vec2 } from "../src/core/index.ts";
 import { confirmDialog, dialog, promptText } from "./dialog.ts";
-import type { Field } from "./dialog.ts";
+import type { Field, MenuItem } from "./dialog.ts";
 
 export type SpineSelKind = "ik" | "transform" | "path" | "sphysics" | "slider" | "skin" | "event" | "image";
 
@@ -25,6 +25,8 @@ export interface SpineUIHost {
   imageSrc(id: string): string | undefined;
   /** Items of the tree: a clickable row like the other tabs'. */
   item(kind: string, id: string, label: string, tag?: string): HTMLElement;
+  /** Shows the tree's right-click menu for a row (`sel` selected first), these items after expand / collapse all. */
+  rowMenu(e: MouseEvent, sel: { kind: string; id: string } | null, items: MenuItem[]): void;
   /** The current animation and local time (for keying constraint values). */
   animation(): string | null;
   time(): number;
@@ -46,7 +48,7 @@ export function constraintRows(m: Model, host: SpineUIHost, matches: (id: string
   const { h } = host;
   const list = constraintList(m);
   const add = h("button", { class: "icon small", title: "New constraint", onclick: (e: MouseEvent) => newConstraintMenu(m, host, e) }, "＋");
-  const rows: HTMLElement[] = [h("div", { class: "item note combo-head" }, h("span", {}, "Constraints (evaluation order)"), add)];
+  const rows: HTMLElement[] = [h("div", { class: "item note list-head" }, h("span", {}, "Constraints (evaluation order)"), add)];
   list.forEach(({ kind, id }, i) => {
     if (!matches(id)) return;
     rows.push(host.item(SEL_OF[kind], id, id, `${i + 1} · ${KIND_LABEL[kind]}`));
@@ -58,10 +60,15 @@ export function constraintRows(m: Model, host: SpineUIHost, matches: (id: string
 export function skinRows(m: Model, host: SpineUIHost): HTMLElement[] {
   const { h } = host;
   const add = h("button", { class: "icon small", title: "New skin", onclick: () => void newSkin(m, host) }, "＋");
-  const rows: HTMLElement[] = [h("div", { class: "item note combo-head" }, h("span", {}, "Skins"), add)];
+  const rows: HTMLElement[] = [h("div", { class: "item note list-head" }, h("span", {}, "Skins"), add)];
   const none = h(
     "div",
-    { class: "item" + (!m.skin ? " selected" : ""), title: "Default attachments only", onclick: () => void host.commit([{ op: "setSkin", name: null } as Op], "no skin") },
+    {
+      class: "item" + (!m.skin ? " selected" : ""),
+      title: "Default attachments only",
+      onclick: () => void host.commit([{ op: "setSkin", name: null } as Op], "no skin"),
+      oncontextmenu: (e: MouseEvent) => host.rowMenu(e, null, skinMenuItems(m, null, host)),
+    },
     h("span", { class: "dot", style: "background:#8b949e" }),
     "(default only)",
     !m.skin ? h("span", { class: "tag" }, "active") : "",
@@ -78,7 +85,7 @@ export function skinRows(m: Model, host: SpineUIHost): HTMLElement[] {
 export function eventRows(m: Model, host: SpineUIHost, matches: (id: string) => boolean): HTMLElement[] {
   const { h } = host;
   const add = h("button", { class: "icon small", title: "New event", onclick: () => void newEvent(host) }, "＋");
-  const rows: HTMLElement[] = [h("div", { class: "item note combo-head" }, h("span", {}, "Events"), add)];
+  const rows: HTMLElement[] = [h("div", { class: "item note list-head" }, h("span", {}, "Events"), add)];
   const uses = (name: string) => Object.values(m.animations ?? {}).reduce((n, a) => n + (a.events ?? []).filter((e) => e.name === name).length, 0);
   for (const name of Object.keys(m.events ?? {}).filter(matches)) {
     const row = host.item("event", name, name, `${m.events![name].audio ? "♪ " : ""}${uses(name)}`);
@@ -92,18 +99,22 @@ export function eventRows(m: Model, host: SpineUIHost, matches: (id: string) => 
   return rows;
 }
 
-export function imageRows(m: Model, host: SpineUIHost, matches: (id: string) => boolean): HTMLElement[] {
+export function imageRows(m: Model, host: SpineUIHost, matches: (id: string) => boolean, section: "all" | "images" | "audio" = "all"): HTMLElement[] {
   const { h } = host;
-  const rows: HTMLElement[] = [h("div", { class: "item note" }, "Images (atlas regions)")];
-  const users = imageUsers(m);
-  for (const id of Object.keys(m.images ?? {}).filter(matches).sort()) rows.push(host.item("image", id, id, `${users.get(id)?.length ?? 0}`));
+  const rows: HTMLElement[] = [];
+  if (section !== "audio") {
+    rows.push(h("div", { class: "item note" }, "Images (atlas regions)"));
+    const users = imageUsers(m);
+    for (const id of Object.keys(m.images ?? {}).filter(matches).sort()) rows.push(host.item("image", id, id, `${users.get(id)?.length ?? 0}`));
+  }
+  if (section === "images") return rows;
+  rows.push(h("div", { class: "item note" }, "Audio (event sounds)"));
   const audio = [...new Set(Object.values(m.events ?? {}).map((e) => e.audio).filter((a): a is string => !!a))];
   if (Object.keys(m.events ?? {}).length && !audio.length) {
-    rows.push(h("div", { class: "item note" }, "Audio (event sounds)"), h("div", { class: "item", style: "color:var(--muted);white-space:normal" }, "None: no event has a sound file."));
+    rows.push(h("div", { class: "item", style: "color:var(--muted);white-space:normal" }, "None: no event has a sound file."));
   }
   if (audio.length) {
-    rows.push(h("div", { class: "item note" }, "Audio (event sounds)"));
-    for (const a of audio) rows.push(h("div", { class: "item", title: `audio/${a}`, onclick: () => void host.playSound(a) }, h("span", { class: "dot", style: "background:#e3b341" }), host.raw(a), h("span", { class: "tag" }, "▶")));
+    for (const a of audio.filter(matches)) rows.push(h("div", { class: "item", title: `audio/${a}`, onclick: () => void host.playSound(a) }, h("span", { class: "dot", style: "background:#e3b341" }), host.raw(a), h("span", { class: "tag" }, "▶")));
   }
   return rows;
 }
@@ -187,7 +198,38 @@ export function ikSpineFields(m: Model, c: IkConstraint, host: SpineUIHost): HTM
     host.h("div", { class: "grid2" }, check(host, "compress", !!c.compress, (v) => up({ compress: v }), "One-bone chains shrink to reach a close target"), check(host, "stretch", !!c.stretch, (v) => up({ stretch: v }), "The chain stretches to reach a far target")),
     host.field("scaleY", host.selectOf([["none", "unchanged"], ["uniform", "uniform"], ["volume", "keep volume"]], c.scaleY ?? "none", (v) => up({ scaleY: v }))),
     check(host, "skin only", !!c.skin, (v) => up({ skin: v }), "Active only while the active skin lists it"),
+    ikKeyNote(host, c),
   ];
+}
+
+/** With an animation open: key the IK settings (their setup values) at the playhead. */
+function ikKeyNote(host: SpineUIHost, c: IkConstraint): HTMLElement {
+  const { h } = host;
+  const anim = host.animation();
+  if (!anim) return h("div", { class: "note" }, "Select an animation to key mix, softness and the bend over time.");
+  const t = host.time();
+  const values: Record<string, number | boolean> = { mix: c.mix, softness: c.softness ?? 0, bendPositive: c.bendPositive, compress: !!c.compress, stretch: !!c.stretch };
+  return h(
+    "div",
+    { class: "insp-stack" },
+    h("div", { class: "section" }, `Key at ${t.toFixed(3)}s in ${anim}`),
+    h(
+      "div",
+      { class: "key-chips" },
+      ...Object.entries(values).map(([ch, v]) =>
+        h(
+          "button",
+          {
+            class: "chip",
+            title: `Key ${ch} (its setup value, ${v}) at the playhead`,
+            onclick: () => void host.commit([{ op: "setIkKeys", animation: anim, ik: c.id, channel: ch, keys: [{ t, v }], mode: "merge" } as Op], `keyed ${c.id} ${ch} at ${t}s`),
+          },
+          `◆ ${ch}`,
+        ),
+      ),
+    ),
+    h("div", { class: "note" }, "Change a value above, then key it; edit keyed values in the timeline."),
+  );
 }
 
 function transformProps(m: Model, id: string, box: HTMLElement, host: SpineUIHost): boolean {
@@ -368,18 +410,7 @@ function skinProps(m: Model, name: string, box: HTMLElement, host: SpineUIHost):
   if (!sk) return false;
   const { h } = host;
   const active = m.skin === name;
-  const rename = async () => {
-    const to = await promptText("Rename Skin", "New name", name);
-    if (to && to !== name && (await host.commit([{ op: "renameSkin", name, to } as Op]))) host.select({ kind: "skin", id: to });
-  };
-  const dup = async () => {
-    const to = await promptText("Duplicate Skin", "Name", `${name}-copy`);
-    if (to && (await host.commit([{ op: "addSkin", name: to, copyOf: name } as Op]))) host.select({ kind: "skin", id: to });
-  };
-  const remove = async () => {
-    if (!(await confirmDialog("Delete skin?", `"${name}" is removed; its attachments stay in the model. (Undo brings it back.)`, "Delete", true))) return;
-    if (await host.commit([{ op: "removeSkin", name } as Op])) host.select(null);
-  };
+  const { rename, dup, remove } = skinActions(name, host);
   const setAtt = (slot: string, placeholder: string, attachment: string | null) => void host.commit([{ op: "setSkinAttachment", skin: name, slot, placeholder, attachment } as Op]);
   const ids = [...Object.keys(m.attachments), ...Object.keys(m.pathAttachments ?? {})];
   const rows: HTMLElement[] = [];
@@ -532,7 +563,7 @@ function newConstraintMenu(m: Model, host: SpineUIHost, e: MouseEvent): void {
   void newConstraint(m, host);
 }
 
-async function newConstraint(m: Model, host: SpineUIHost): Promise<void> {
+export async function newConstraint(m: Model, host: SpineUIHost): Promise<void> {
   const bones: Array<[string, string]> = bonesOf(m);
   const r = await dialog({
     title: "New Constraint",
@@ -572,12 +603,51 @@ async function newConstraint(m: Model, host: SpineUIHost): Promise<void> {
   if (await host.commit([op], `added ${kind} constraint ${id}`)) host.select({ kind: SEL_OF[kind], id });
 }
 
-async function newSkin(m: Model, host: SpineUIHost): Promise<void> {
+/** Rename / duplicate / delete of a skin (the skin panel's header buttons and the tree's right-click menu). */
+function skinActions(name: string, host: SpineUIHost) {
+  return {
+    rename: async () => {
+      const to = await promptText("Rename Skin", "New name", name);
+      if (to && to !== name && (await host.commit([{ op: "renameSkin", name, to } as Op]))) host.select({ kind: "skin", id: to });
+    },
+    dup: async () => {
+      const to = await promptText("Duplicate Skin", "Name", `${name}-copy`);
+      if (to && (await host.commit([{ op: "addSkin", name: to, copyOf: name } as Op]))) host.select({ kind: "skin", id: to });
+    },
+    remove: async () => {
+      if (!(await confirmDialog("Delete skin?", `"${name}" is removed; its attachments stay in the model. (Undo brings it back.)`, "Delete", true))) return;
+      if (await host.commit([{ op: "removeSkin", name } as Op])) host.select(null);
+    },
+  };
+}
+
+/** Right-click menu items of a skin row (`name` null: the "(default only)" row). */
+export function skinMenuItems(m: Model, name: string | null, host: SpineUIHost): MenuItem[] {
+  const active = name === null ? !m.skin : m.skin === name;
+  const items: MenuItem[] = [
+    name !== null && active
+      ? { label: "Deactivate", run: () => void host.commit([{ op: "setSkin", name: null } as Op], "no skin") }
+      : { label: name === null ? "Use default attachments only" : "Activate", disabled: active, run: () => void host.commit([{ op: "setSkin", name } as Op], name ? `skin ${name}` : "no skin") },
+  ];
+  if (name !== null) {
+    const { rename, dup, remove } = skinActions(name, host);
+    items.push(
+      { label: "Rename…", run: () => void rename() },
+      { label: "Duplicate…", run: () => void dup() },
+      { label: "", separator: true, run: () => {} },
+      { label: "Delete skin…", hint: "Shift+Del", danger: true, run: () => void remove() },
+    );
+  }
+  items.push({ label: "", separator: true, run: () => {} }, { label: "New skin…", run: () => void newSkin(m, host) });
+  return items;
+}
+
+export async function newSkin(m: Model, host: SpineUIHost): Promise<void> {
   const name = await promptText("New Skin", "Name", `skin${Object.keys(m.skins ?? {}).length + 1}`);
   if (name && (await host.commit([{ op: "addSkin", name } as Op], `added skin ${name}`))) host.select({ kind: "skin", id: name });
 }
 
-async function newEvent(host: SpineUIHost): Promise<void> {
+export async function newEvent(host: SpineUIHost): Promise<void> {
   const name = await promptText("New Event", "Name", "event");
   if (name && (await host.commit([{ op: "setEvent", name } as Op], `new event ${name}`))) host.select({ kind: "event", id: name });
 }
