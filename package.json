@@ -1,0 +1,24 @@
+{
+  "name": "awaken2d",
+  "version": "0.1.0",
+  "description": "AI-friendly 2D skeletal animation toolkit (Spine/Live2D-like) with text model format, headless renderer, CLI and MCP server.",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=23.6"
+  },
+  "scripts": {
+    "rig": "node --disable-warning=ExperimentalWarning src/cli/main.ts",
+    "mcp": "node --disable-warning=ExperimentalWarning src/mcp/server.ts",
+    "test": "node --disable-warning=ExperimentalWarning --test \"tests/**/*.test.ts\"",
+    "typecheck": "tsc -p .",
+    "example": "node --disable-warning=ExperimentalWarning examples/make-mascot.ts",
+    "example:psd": "node --disable-warning=ExperimentalWarning examples/make-psd.ts",
+    "editor": "node --disable-warning=ExperimentalWarning src/cli/main.ts serve",
+    "example:character": "npm run example:psd && node --disable-warning=ExperimentalWarning src/cli/main.ts import examples/psd-demo/character.psd examples/psd-demo/character.rig.json --target none --propose --ik --physics --force && node --disable-warning=ExperimentalWarning src/cli/main.ts apply examples/psd-demo/character.rig.json examples/psd-demo/animate.ops.json && node --disable-warning=ExperimentalWarning src/cli/main.ts apply examples/psd-demo/character.rig.json examples/psd-demo/face.ops.json"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0"
+  }
+}

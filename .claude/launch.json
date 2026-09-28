@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "awaken2d-editor",
+      "runtimeExecutable": "node",
+      "runtimeArgs": [
+        "--disable-warning=ExperimentalWarning",
+        "src/cli/main.ts",
+        "serve",
+        "--port",
+        "5178"
+      ],
+      "port": 5178
+    }
+  ]
+}

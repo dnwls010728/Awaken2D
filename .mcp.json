@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "awaken2d": {
+      "command": "node",
+      "args": ["--disable-warning=ExperimentalWarning", "src/mcp/server.ts"]
+    }
+  }
+}

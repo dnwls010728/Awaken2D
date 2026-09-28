@@ -1,0 +1,19 @@
+[
+  { "op": "setAnimation", "name": "wave", "duration": 1.2, "loop": true },
+  { "op": "setIkKeys", "animation": "wave", "ik": "arm_l_ik", "channel": "mix", "keys": [{ "t": 0, "v": 0 }] },
+  { "op": "setKeys", "animation": "wave", "bone": "upper_arm_l", "channel": "rotate", "keys": [{ "t": 0, "v": 130 }, { "t": 1.2, "v": 130 }] },
+  { "op": "setKeys", "animation": "wave", "bone": "lower_arm_l", "channel": "rotate", "keys": [
+    { "t": 0, "v": 10, "ease": "easeInOut" }, { "t": 0.3, "v": 45, "ease": "easeInOut" }, { "t": 0.6, "v": 10, "ease": "easeInOut" },
+    { "t": 0.9, "v": 45, "ease": "easeInOut" }, { "t": 1.2, "v": 10 }] },
+  { "op": "setKeys", "animation": "wave", "bone": "head", "channel": "rotate", "keys": [{ "t": 0, "v": -6 }, { "t": 1.2, "v": -6 }] },
+  { "op": "updatePhysics", "id": "tail_spring", "gravity": [0, -1500] },
+
+  { "op": "setAnimation", "name": "crouch_reach", "duration": 2, "loop": true },
+  { "op": "setKeys", "animation": "crouch_reach", "bone": "hip", "channel": "translate", "keys": [
+    { "t": 0, "v": [0, 0], "ease": "easeInOut" }, { "t": 0.6, "v": [0, -45] }, { "t": 1.4, "v": [0, -45], "ease": "easeInOut" }, { "t": 2, "v": [0, 0] }] },
+  { "op": "setKeys", "animation": "crouch_reach", "bone": "arm_l_ik_target", "channel": "translate", "space": "world", "keys": [
+    { "t": 0, "v": [91.6, 219.5], "ease": "easeInOut" }, { "t": 0.6, "v": [95, 175], "ease": "easeInOut" },
+    { "t": 1, "v": [165, 410], "ease": "easeInOut" }, { "t": 1.4, "v": [95, 175], "ease": "easeInOut" }, { "t": 2, "v": [91.6, 219.5] }] },
+  { "op": "setKeys", "animation": "crouch_reach", "bone": "head", "channel": "rotate", "keys": [
+    { "t": 0, "v": 0, "ease": "easeInOut" }, { "t": 1, "v": -12, "ease": "easeInOut" }, { "t": 2, "v": 0 }] }
+]
