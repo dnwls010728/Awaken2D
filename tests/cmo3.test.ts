@@ -9,8 +9,7 @@ import type { RotationDeformer, WarpDeformer } from "../src/core/index.ts";
 import { live2dFrame } from "../src/core/live2d.ts";
 import { readCaff } from "../src/live2d/caff.ts";
 import { cmo3ToModel, parseXml } from "../src/live2d/cmo3.ts";
-import { exportLive2DData, importLive2D, mocToModel, readMoc3, writeMoc3 } from "../src/live2d/index.ts";
-import { applyLive2DJson } from "../src/live2d/import.ts";
+import { exportLive2DData, importLive2D, writeMoc3 } from "../src/live2d/index.ts";
 import { can3Fixture, cmo3Fixture } from "./cmo3-fixture.ts";
 import { can3ToMotions } from "../src/live2d/can3.ts";
 import { pathAt, pathMoves, pathPoints, remapPaths } from "../src/core/live2dpath.ts";
@@ -130,11 +129,13 @@ test("cmo3 import saves the model with its atlas, validates and exports to moc3"
   assert.equal(model.images!.texture_00.path, "images/fx/texture_00.png");
   const issues = validateModel(model, { baseDir });
   assert.deepEqual(issues.filter((i) => i.level === "error"), []);
-  // the moc3 round trip keeps the rig
+  // it exports to moc3 (blend shapes need 5.0)
   const out = exportLive2DData(model, { name: "fx" });
-  const back = mocToModel(readMoc3(writeMoc3(out.moc)), { name: "fx", textures: ["texture_00"] }).model;
-  for (const id of ["M1", "M3"]) assert.deepEqual(back.attachments[id].live2d!.forms, model.attachments[id].live2d!.forms);
-  assert.deepEqual(back.parameters!.map((p) => p.blendShape), model.parameters!.map((p) => p.blendShape));
+  assert.deepEqual(out.warnings, ["1 hidden art mesh(es) left out: M2"]);
+  assert.equal(out.moc.version, 5);
+  assert.equal(out.moc.counts.artMeshes, Object.values(model.attachments).filter((a) => a.live2d && !a.live2d.hidden).length);
+  assert.equal(out.moc.counts.parameters, model.parameters!.length);
+  assert.ok(out.moc.counts.blendShapesArtMeshes > 0);
   // runtime files are refused: the import reads the editor file
   writeFileSync(join(dir, "fx.moc3"), writeMoc3(out.moc));
   assert.throws(() => importLive2D(join(dir, "fx.moc3"), join(dir, "x", "x.rig.json")), /runtime export/);
@@ -212,14 +213,11 @@ test("deformation paths in ops: set / remove with setLive2DMesh, dropped when a 
   assert.deepEqual(p2.bind, [{ vertex: 2, t: 1, weight: 1 }]);
 });
 
-test("linked parameters (Cubism's chain link): combined flag to and from cdi3 CombinedParameters", () => {
+test("linked parameters (Cubism's chain link): combined flag to cdi3 CombinedParameters", () => {
   const { model } = cmo3ToModel(cmo3Fixture().xml, { name: "fx" });
   const linked = applyOps(model, [{ op: "updateParameter", id: "ParamB", combined: true }]).model;
   const out = exportLive2DData(linked, { name: "fx" });
   assert.deepEqual(out.displayInfo.CombinedParameters, [["ParamB", "ParamA"]]);
-  const res = mocToModel(readMoc3(writeMoc3(out.moc)), { name: "fx", textures: ["texture_00"] });
-  applyLive2DJson(res, { displayInfo: out.displayInfo });
-  assert.deepEqual(res.model.parameters!.filter((p) => p.combined).map((p) => p.id), ["ParamB"]);
   const unlinked = applyOps(linked, [{ op: "updateParameter", id: "ParamB", combined: false }]).model;
   assert.equal(exportLive2DData(unlinked, { name: "fx" }).displayInfo.CombinedParameters, undefined);
 });

@@ -430,6 +430,27 @@ function reparentBlendPoints(m: Model, grid: KeyformGrid, forms: Array<{ points:
   }
 }
 
+/**
+ * A warp hands its parent chain's accumulated scale on to the rotation deformers under it (Cubism multiplies it in),
+ * so moving a warp to another parent rescales the first rotation deformer on each path below it (through warps) by
+ * old / new accumulated scale, keeping their look. Deeper rotations follow their rotation parent.
+ */
+function rescaleRotationsUnder(m: Model, warp: string, from: string | null, to: string | null): void {
+  const rig = m.live2d!;
+  const firstRotations = (id: string): RotationDeformer[] =>
+    rig.deformers.filter((d) => d.parent === id).flatMap((d) => (d.type === "rotation" ? [d] : firstRotations(d.id)));
+  for (const r of firstRotations(warp)) {
+    r.forms.forEach((f, k) => {
+      const frame = frameAt(m, gridPointValues(m, r.grid, k));
+      const ratio = (from ? (frame.deformers.get(from)?.scale ?? 1) : 1) / (to ? (frame.deformers.get(to)?.scale ?? 1) : 1);
+      if (ratio === 1 || !Number.isFinite(ratio)) return;
+      f.scale = +(f.scale * ratio).toPrecision(12);
+      // scale differences of blend shapes add to the keyform's scale: they scale the same way
+      if (k === 0) for (const s of r.blendShapes ?? []) for (const bf of s.forms) if (bf.scale) bf.scale = +(bf.scale * ratio).toPrecision(12);
+    });
+  }
+}
+
 function reparentNode(m: Model, node: Node, to: string | null): void {
   if (node.kind === "mesh") {
     const att = ownMesh(m, node.id);
@@ -439,6 +460,7 @@ function reparentNode(m: Model, node: Node, to: string | null): void {
   } else if (node.kind === "deformer") {
     const d = m.live2d!.deformers.find((x) => x.id === node.id)!;
     if (d.type === "warp") {
+      rescaleRotationsUnder(m, d.id, d.parent, to);
       reparentBlendPoints(m, d.grid, d.forms, d.blendShapes, d.parent, to);
       reparentPoints(m, d.grid, d.forms, d.parent, to);
     } else {

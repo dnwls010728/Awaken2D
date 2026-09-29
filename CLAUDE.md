@@ -23,12 +23,12 @@
   `tests/spine-reference.ts` evaluates Spine data by Spine's own rules (local, gitignored: `work/tools/spine-compare.ts`,
   `spine-roundtrip.ts` check a real export). Keep imported data exact: unedited attachments/deforms are re-emitted
   from `meta.spine` (guarded by signatures), so ops that change a mesh must replace the attachment object.
-- Live2D interop lives in `src/live2d` (moc3.ts binary reader/writer, import.ts / export.ts pure, index.ts file I/O;
+- Live2D interop lives in `src/live2d` (moc3.ts binary writer, import.ts / export.ts pure, index.ts file I/O;
   the user-facing import reads the Cubism Editor file: caff.ts container + cmo3.ts main.xml -> rig, can3.ts
   animation scenes -> motion3 -> animations; checked with `work/tools/cmo3-compare.ts <cmo3> <runtime moc3>` and
   `can3-compare.ts <cmo3> <can3> <motion folder>` against the runtime export of the same files; deformation paths
-  (editing aid) are `src/core/live2dpath.ts`, curve checked by `work/tools/path-curve-check.ts`; the runtime-set
-  reader `importLive2DRuntime` stays for tests and tools);
+  (editing aid) are `src/core/live2dpath.ts`, curve checked by `work/tools/path-curve-check.ts`; runtime sets
+  (model3 + moc3) are only written, never read);
   evaluation is core: `src/core/live2d.ts` (keyforms, deformers, glue, draw order), `live2dphysics.ts` (physics3,
   Cubism Framework step for step), `live2dpose.ts` (pose3 fades), `live2dops.ts` (edit ops). Keep it exact: the
   local tools `work/tools/live2d-compare.ts`, `live2d-fuzz.ts`, `live2d-motion-compare.ts` (gitignored) compare

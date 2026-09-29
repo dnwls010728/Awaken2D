@@ -36,7 +36,7 @@ Spine·Live2D 계열의 2D 리깅·애니메이션 툴킷. AI 에이전트가 �
 | **검증기** | 구조를 검사한 뒤, 모든 애니메이션을 샘플링해 접히는 삼각형과 NaN을 잡음. |
 | **두 가지 타깃** | 모델은 Spine 모델(본, 가중치, 스킨, 컨스트레인트) 아니면 Live2D 모델(파라미터, 키폼, 디포머, 파츠). 다른 쪽 op는 거부되고, 에디터도 해당 도구만 보여줌. |
 | **Spine 연동** | Spine 3.8/4.x export를 가져오고 다시 내보냄. 포즈가 공식 Spine 4.3 런타임과 일치. 편집 없이 왕복하면 원본 데이터 그대로. |
-| **Live2D 연동** | Cubism 모델(model3 + moc3, 모션, 물리, 포즈)을 가져오고 moc3 + JSON으로 내보냄. 공식 Cubism Core와 프레임 단위로 일치. |
+| **Live2D 연동** | Cubism Editor 모델(.cmo3, .can3 모션 포함)을 가져오고 런타임 세트(moc3 + model3 / physics3 / motion3 JSON)로 내보냄. 공식 Cubism Core와 프레임 단위로 일치. |
 | **아트 임포트** | PSD/PSB·PNG 레이어가 슬롯이 되고, 그림을 따라 트레이스한 메시가 붙음. 메시 밀도는 레이어의 크기·모양·이름을 보고 정함. |
 | **웹 에디터** | 기즈모, 메시·가중치 편집, 파라미터 키폼, 도프시트 타임라인, 실행 취소. 에이전트가 파일을 고치면 바로 반영됨. UI는 영어·한국어·일본어. |
 | **MCP 서버** | 임포트, 편집, 검증, 렌더, 익스포트를 모두 도구로 제공. |
@@ -299,7 +299,7 @@ src/core     포맷 타입, 수학, 포즈/스키닝, 애니메이션, 지오메
              Spine 런타임 포팅 (spine.ts), Live2D 평가 (live2d*.ts)
 src/import   PSD 리더/라이터, 레이어 임포트, 스켈레톤 제안
 src/spine    Spine 아틀라스, JSON 임포트/익스포트, 파일 입출력
-src/live2d   moc3 리더/라이터, model3/motion3/physics3 임포트/익스포트
+src/live2d   Cubism Editor(.cmo3 / .can3) 임포트, moc3 라이터, 런타임 익스포트(model3/motion3/physics3)
 src/render   PNG 코덱, 래스터라이저, 비트맵 폰트, 프레임 / 컨택트 시트 / 파라미터 시트
 src/cli      `rig` 명령
 src/mcp      stdio MCP 서버
@@ -315,5 +315,5 @@ examples     make-mascot.ts는 op만으로 캐릭터를 만듦. make-psd.ts는 �
 - [x] 웹 에디터 (에이전트 편집 실시간 반영, 실행 취소, 다국어 UI)
 - [x] Live2D 파라미터(연결된 2D 조작), IK, 물리
 - [x] Spine 임포트/익스포트: 모든 컨스트레인트, 스킨, 이벤트와 사운드, 바운딩 박스
-- [x] Live2D 임포트/익스포트: moc3, 키폼과 디포머, 모션, 물리, 포즈
+- [x] Live2D: .cmo3 / .can3 임포트, moc3 익스포트, 키폼과 디포머, 모션, 물리, 포즈
 - [ ] 런타임 플레이어 (웹, Unity/Godot)

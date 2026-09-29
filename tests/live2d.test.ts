@@ -1,18 +1,18 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { applyOps, loadModel, normalizeModel, restVertices, serializeModel, validateModel } from "../src/core/index.ts";
+import { applyOps, normalizeModel, restVertices, serializeModel, validateModel } from "../src/core/index.ts";
 import type { Model, Op } from "../src/core/index.ts";
 import { live2dFrame, live2dGuides, partOpacities } from "../src/core/live2d.ts";
 import { describeModel } from "../src/core/describe.ts";
 import { parseOverlay, renderPose } from "../src/render/render.ts";
 import { PoseSimulator } from "../src/core/physics.ts";
-import { exportLive2D, exportLive2DData, importLive2DRuntime, motionToAnimation, readMoc3, writeMoc3 } from "../src/live2d/index.ts";
-import { applyLive2DJson, mocToModel, syncLive2DVertices } from "../src/live2d/import.ts";
+import { exportLive2D, exportLive2DData, motionToAnimation, writeMoc3 } from "../src/live2d/index.ts";
+import { applyLive2DMotions, syncLive2DVertices } from "../src/live2d/import.ts";
 import { encodePNG } from "../src/render/png.ts";
-import { live2dBlendRig, live2dRig, motion3, physics3, pose3 } from "./live2d-fixture.ts";
+import { live2dBlendRig, live2dRig, livePhysics, livePose, motion3 } from "./live2d-fixture.ts";
 
 const golden = JSON.parse(readFileSync(new URL("./live2d-golden.json", import.meta.url), "utf8"));
 const goldenBlend = JSON.parse(readFileSync(new URL("./live2d-golden-blend.json", import.meta.url), "utf8"));
@@ -46,28 +46,26 @@ test("live2d rig poses like the Cubism Core (nested warps / rotations, reflectio
   checkGolden(live2dRig(), "fixture");
 });
 
-test("moc3 write/read at every version keeps the rig exactly", () => {
+test("moc3 writer: every version gets its header, count table and arrays", () => {
   for (const version of [1, 2, 3, 4, 5] as const) {
     const rig = live2dRig();
     if (version < 4) for (const a of Object.values(rig.attachments)) for (const f of a.live2d!.forms) delete f.multiply, delete f.screen;
     if (version < 2) for (const d of rig.live2d!.deformers) if (d.type === "warp") delete d.bilinear;
-    const bytes = writeMoc3(exportLive2DData(rig, { name: "f", version }).moc);
+    const data = exportLive2DData(rig, { name: "f", version }).moc;
+    const bytes = writeMoc3(data);
     assert.equal(String.fromCharCode(...bytes.subarray(0, 4)), "MOC3");
     assert.equal(bytes[4], version, `v${version} written as asked`);
-    const back = readMoc3(bytes);
-    assert.deepEqual(writeMoc3(back), bytes, `v${version} rewrites byte for byte`);
-    const { model, warnings } = mocToModel(back, { name: "f", textures: ["tex"] });
-    assert.deepEqual(warnings, []);
-    const defaults = Object.fromEntries(rig.parameters!.map((p) => [p.id, p.default]));
-    for (const sample of golden.samples) {
-      const a = live2dFrame(rig, { ...defaults, ...sample.params });
-      const b = live2dFrame(model, { ...defaults, ...sample.params });
-      for (const [id, m] of a.meshes) m.points.forEach((x, k) => assert.ok(Math.abs(x - b.meshes.get(id)!.points[k]) < 1e-6, `v${version} ${id}`));
-      assert.deepEqual(b.order, a.order);
-    }
-    if (version >= 4) checkGolden(model, `v${version} reimport`);
+    assert.equal(bytes.length % 64, 0, "the body is 64-byte aligned");
+    assert.deepEqual(writeMoc3(data), bytes, "deterministic");
+    const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const countsAt = dv.getUint32(64, true);
+    assert.equal(dv.getUint32(countsAt + 4 * 4, true), Object.values(rig.attachments).filter((a) => a.live2d).length, "art mesh count");
+    assert.equal(dv.getUint32(countsAt + 5 * 4, true), rig.parameters!.length, "parameter count");
+    assert.equal(dv.getFloat32(dv.getUint32(68, true), true), rig.live2d!.canvas.pixelsPerUnit, "canvas");
   }
-  assert.throws(() => readMoc3(new Uint8Array(4096)), /not a \.moc3/);
+  const data = exportLive2DData(live2dRig(), { name: "f" }).moc;
+  data.arrays["parameter.max"] = new Float32Array(1);
+  assert.throws(() => writeMoc3(data), /parameter\.max has 1 entries/);
 });
 
 test("motion3 curves and physics3 play like the Cubism Framework", () => {
@@ -76,7 +74,9 @@ test("motion3 curves and physics3 play like the Cubism Framework", () => {
     const restricted = key.startsWith("restricted");
     const physics = key.endsWith("+physics");
     const model = live2dRig();
-    applyLive2DJson({ model, log: [], warnings: [] }, { motions: [{ group: "Idle", index: 0, file: "motion/m.motion3.json", json: motion3(restricted) }], physics: physics3(), pose: pose3() });
+    model.live2d!.physics = livePhysics();
+    model.live2d!.pose = livePose();
+    applyLive2DMotions({ model, log: [], warnings: [] }, [{ group: "Idle", index: 0, file: "motion/m.motion3.json", json: motion3(restricted) }]);
     const sim = new PoseSimulator(model, "m", { settle: 0, warmupLoops: 0, physics });
     for (const fr of frames) {
       const pose = sim.at(fr.t);
@@ -92,7 +92,7 @@ test("motion3 curves and physics3 play like the Cubism Framework", () => {
 test("motion3 export gives the same curves back", () => {
   for (const restricted of [false, true]) {
     const model = live2dRig();
-    applyLive2DJson({ model, log: [], warnings: [] }, { motions: [{ group: "Idle", index: 0, file: "motion/m.motion3.json", json: motion3(restricted) }] });
+    applyLive2DMotions({ model, log: [], warnings: [] }, [{ group: "Idle", index: 0, file: "motion/m.motion3.json", json: motion3(restricted) }]);
     const out = exportLive2DData(model, { name: "f" });
     const json = out.motions[0].json;
     assert.equal(json.Meta.Duration, 2, "the file keeps its duration (Cubism adds the loop's closing frame itself)");
@@ -115,7 +115,7 @@ test("motion3 curves for ids the moc does not have are kept for export only (Cub
   const json = motion3();
   json.Curves.push({ Target: "Parameter", Id: "Ghost", Segments: [0, 0, 0, 1, 1] }, { Target: "PartOpacity", Id: "P_ghost", Segments: [0, 1, 0, 1, 0] });
   const res = { model, log: [], warnings: [] as string[] };
-  applyLive2DJson(res, { motions: [{ group: "Idle", index: 0, file: "m.motion3.json", json }] });
+  applyLive2DMotions(res, [{ group: "Idle", index: 0, file: "m.motion3.json", json }]);
   const a = model.animations!.m;
   assert.equal(a.params?.Ghost, undefined);
   assert.equal(a.partOpacity?.P_ghost, undefined);
@@ -128,7 +128,7 @@ test("motion3 curves for ids the moc does not have are kept for export only (Cub
 
 test("models imported before: motion curves for ids the moc lacks move aside on load (valid, still exported)", () => {
   const model = live2dRig();
-  applyLive2DJson({ model, log: [], warnings: [] }, { motions: [{ group: "Idle", index: 0, file: "m.motion3.json", json: motion3() }] });
+  applyLive2DMotions({ model, log: [], warnings: [] }, [{ group: "Idle", index: 0, file: "m.motion3.json", json: motion3() }]);
   // what an older import wrote: the orphan curves inside the animation
   const old = JSON.parse(serializeModel(model));
   old.animations.m.params.Ghost = [{ t: 0, v: 0 }, { t: 1, v: 1 }];
@@ -233,7 +233,7 @@ test("live2d edit ops: keyforms, keys, deformers, parts, parameters", () => {
   assert.throws(() => applyOps(base, [{ op: "updateDeformer", id: "W_body", parent: "W_face" } as Op]), /under itself or its descendants/);
 });
 
-test("enableLive2D turns a plain model into a Live2D rig that exports and reads back", () => {
+test("enableLive2D turns a plain model into a Live2D rig that exports", () => {
   let m = applyOps(
     { format: "awaken2d/0.1", name: "plain", target: "live2d", images: {}, bones: [{ id: "root", parent: null, x: 0, y: 0, rotation: 0, scaleX: 1, scaleY: 1, length: 0 }], slots: [], attachments: {}, animations: {} },
     [
@@ -248,55 +248,69 @@ test("enableLive2D turns a plain model into a Live2D rig that exports and reads 
   ).model;
   const top = (mm: Model, v: number) => restVertices(mm, "a", mm.attachments.a, { Tilt: v }).reduce((s, p) => (p[1] > 150 ? s + p[0] : s), 0);
   assert.ok(top(m, 1) - top(m, 0) > 50, "the warp's keyform moves the top of the mesh");
-  const bytes = writeMoc3(exportLive2DData(m, { name: "plain" }).moc);
-  const back = mocToModel(readMoc3(bytes), { name: "plain", textures: [] }).model;
-  for (const v of [-1, 0, 0.4, 1]) {
-    const x = restVertices(m, "a", m.attachments.a, { Tilt: v });
-    const y = restVertices(back, "a", back.attachments.a, { Tilt: v });
-    assert.ok(x.every((p, i) => Math.hypot(p[0] - y[i][0], p[1] - y[i][1]) < 1e-3), `Tilt ${v}`);
-  }
+  const out = exportLive2DData(m, { name: "plain" });
+  assert.deepEqual(out.warnings, []);
+  assert.deepEqual([out.moc.counts.artMeshes, out.moc.counts.warpDeformers, out.moc.counts.parameters], [1, 1, 1]);
+  assert.equal(String.fromCharCode(...writeMoc3(out.moc).subarray(0, 4)), "MOC3");
   m = applyOps(m, [{ op: "removeDeformer", id: "W" } as Op]).model;
   assert.equal(m.live2d!.deformers.length, 0);
 });
 
-test("Live2D files: model3.json import and runtime export round trip", () => {
+test("a warp moved under a rotation deformer keeps the rotation deformers below it in place (accumulated scale)", () => {
+  const m = applyOps(
+    { format: "awaken2d/0.1", name: "nest", target: "live2d", images: {}, bones: [{ id: "root", parent: null, x: 0, y: 0, rotation: 0, scaleX: 1, scaleY: 1, length: 0 }], slots: [], attachments: {}, animations: {} },
+    [
+      { op: "addSlot", id: "face", bone: "root" },
+      { op: "addMesh", id: "face", slot: "face", shape: { rect: { x: -40, y: 300, width: 80, height: 100 }, cols: 2, rows: 2 } },
+      { op: "addParameter", id: "Tilt", min: -30, max: 30 },
+      { op: "enableLive2D" },
+      { op: "addDeformer", id: "RHead", type: "rotation", origin: [0, 280], children: ["face"] },
+      { op: "setKeyformKeys", target: "RHead", param: "Tilt", keys: [-30, 0, 30] },
+      { op: "setKeyform", target: "RHead", at: { Tilt: 30 }, angle: 10 },
+      { op: "addDeformer", id: "WBody", type: "warp", rect: { x: -200, y: -100, width: 400, height: 600 }, children: ["RHead"] },
+    ] as Op[],
+  ).model;
+  const pose = (mm: Model, v: number) => restVertices(mm, "face", mm.attachments.face, { Tilt: v });
+  const moved = applyOps(m, [{ op: "addDeformer", id: "RBody", type: "rotation", origin: [0, 0], children: ["WBody"] } as Op]).model;
+  for (const v of [-30, 0, 12, 30]) {
+    const a = pose(m, v);
+    const b = pose(moved, v);
+    assert.ok(a.every((p, i) => Math.hypot(p[0] - b[i][0], p[1] - b[i][1]) < 1e-3), `Tilt ${v}`);
+  }
+  // and back out again
+  const back = applyOps(moved, [{ op: "removeDeformer", id: "RBody" } as Op]).model;
+  assert.ok(pose(m, 30).every((p, i) => Math.hypot(p[0] - pose(back, 30)[i][0], p[1] - pose(back, 30)[i][1]) < 1e-3));
+});
+
+test("Live2D runtime export writes model3, moc3, physics3, cdi3, pose3, motions and textures", () => {
   const dir = mkdtempSync(join(tmpdir(), "awaken2d-l2d-"));
-  const src = join(dir, "src");
-  mkdirSync(join(src, "tex"), { recursive: true });
-  mkdirSync(join(src, "motion"), { recursive: true });
-  writeFileSync(join(src, "f.moc3"), writeMoc3(exportLive2DData(live2dRig(), { name: "f", version: 5 }).moc));
-  writeFileSync(join(src, "tex", "texture_00.png"), encodePNG({ width: 2, height: 2, data: new Uint8Array(16).fill(255) }));
-  writeFileSync(join(src, "motion", "m.motion3.json"), JSON.stringify(motion3()));
-  writeFileSync(join(src, "f.physics3.json"), JSON.stringify(physics3()));
-  writeFileSync(join(src, "f.cdi3.json"), JSON.stringify({ Version: 3, Parameters: [{ Id: "AngleX", GroupId: "G", Name: "각도 X" }], ParameterGroups: [{ Id: "G", GroupId: "", Name: "Face" }], Parts: [{ Id: "P_face", Name: "얼굴" }] }));
-  writeFileSync(join(src, "f.pose3.json"), JSON.stringify({ Type: "Live2D Pose", Groups: [[{ Id: "P_face", Link: [] }]] }));
-  writeFileSync(
-    join(src, "f.model3.json"),
-    JSON.stringify({
-      Version: 3,
-      FileReferences: { Moc: "f.moc3", Textures: ["tex/texture_00.png"], Physics: "f.physics3.json", Pose: "f.pose3.json", DisplayInfo: "f.cdi3.json", Motions: { Idle: [{ File: "motion/m.motion3.json" }] } },
-      Groups: [{ Target: "Parameter", Name: "EyeBlink", Ids: ["Eye"] }],
-    }),
-  );
-  const res = importLive2DRuntime(join(src, "f.model3.json"), join(dir, "rig", "f.rig.json"));
-  assert.deepEqual(res.warnings, []);
-  assert.ok(existsSync(join(dir, "rig", "images", "f", "texture_00.png")));
-  const { model, baseDir } = loadModel(join(dir, "rig", "f.rig.json"));
-  assert.equal(model.parameters!.find((p) => p.id === "AngleX")!.name, "각도 X");
-  assert.equal(model.live2d!.parts.find((p) => p.id === "P_face")!.name, "얼굴");
-  assert.equal(model.live2d!.physics!.settings.length, 1);
-  assert.ok(model.animations!.m.partOpacity!.P_face.length > 0);
-  checkGolden(model, "imported");
-  assert.deepEqual(validateModel(model, { baseDir, poseSamples: 2 }).filter((i) => i.level === "error"), []);
+  mkdirSync(join(dir, "images"), { recursive: true });
+  writeFileSync(join(dir, "images", "tex.png"), encodePNG({ width: 2, height: 2, data: new Uint8Array(16).fill(255) }));
+  const model = live2dRig();
+  model.images = { tex: { path: "images/tex.png" } };
+  model.live2d!.physics = livePhysics();
+  model.live2d!.pose = livePose();
+  model.parameters!.find((p) => p.id === "AngleX")!.name = "각도 X";
+  model.live2d!.parts.find((p) => p.id === "P_face")!.name = "얼굴";
+  applyLive2DMotions({ model, log: [], warnings: [] }, [{ group: "Idle", index: 0, file: "motion/m.motion3.json", json: motion3() }]);
+  assert.deepEqual(validateModel(model, { baseDir: dir, poseSamples: 2 }).filter((i) => i.level === "error"), []);
 
   const out = join(dir, "out");
-  const ex = exportLive2D(model, baseDir, out, { name: "g" });
-  for (const f of ["g.model3.json", "g.moc3", "g.physics3.json", "g.cdi3.json", "g.pose3.json", "motion/m.motion3.json", "g.textures/texture_00.png"]) assert.ok(ex.files.includes(f), f);
-  const m3 = JSON.parse(readFileSync(join(out, "g.model3.json"), "utf8"));
-  assert.deepEqual(m3.Groups, [{ Target: "Parameter", Name: "EyeBlink", Ids: ["Eye"] }]);
-  const again = importLive2DRuntime(join(out, "g.model3.json"), join(dir, "again", "g.rig.json"));
-  checkGolden(again.model, "exported and read back");
-  assert.deepEqual(again.model.live2d!.physics, model.live2d!.physics);
+  const ex = exportLive2D(model, dir, out, { name: "g" });
+  for (const f of ["g.model3.json", "g.moc3", "g.physics3.json", "g.cdi3.json", "g.pose3.json", "motion/m.motion3.json", "g.textures/tex.png"]) assert.ok(ex.files.includes(f), f);
+  const read = (f: string) => JSON.parse(readFileSync(join(out, f), "utf8"));
+  const m3 = read("g.model3.json");
+  assert.deepEqual(m3.FileReferences.Motions.Idle[0], { File: "motion/m.motion3.json" });
+  assert.equal(m3.FileReferences.Moc, "g.moc3");
+  const ph = read("g.physics3.json");
+  assert.equal(ph.PhysicsSettings[0].Input[0].Source.Id, "AngleX");
+  assert.equal(ph.PhysicsSettings[0].Output[0].Destination.Id, "Arm");
+  assert.deepEqual(ph.PhysicsSettings[0].Vertices[1].Position, { X: 0, Y: 10 });
+  const cdi = read("g.cdi3.json");
+  assert.equal(cdi.Parameters.find((p: { Id: string }) => p.Id === "AngleX").Name, "각도 X");
+  assert.equal(cdi.Parts.find((p: { Id: string }) => p.Id === "P_face").Name, "얼굴");
+  assert.deepEqual(read("g.pose3.json").Groups[0].map((p: { Id: string }) => p.Id), ["P_face", "P_alt"]);
+  assert.equal(String.fromCharCode(...readFileSync(join(out, "g.moc3")).subarray(0, 4)), "MOC3");
 });
 
 test("motion3 export of a loop made in the editor: every curve has a segment and reaches Duration (Cubism Viewer / Framework parse it)", () => {
@@ -384,14 +398,11 @@ test("blend shapes (Cubism 4.2+) pose like the Cubism Core: keyed differences on
   const m = live2dBlendRig();
   assert.equal(validateModel(m).filter((i) => i.level === "error").length, 0);
   checkGolden(m, "blend", 2e-6, goldenBlend);
-  // moc3 round trip (5.0: colors per keyform) keeps the shapes and their look
+  // the export writes them to moc3 5.0 (shapes on parts, rotations and glue need it)
   const data = exportLive2DData(m, { name: "f" }).moc;
   assert.equal(data.version, 5);
-  const back = mocToModel(readMoc3(writeMoc3(data)), { name: "f", textures: ["tex"] }).model;
-  assert.deepEqual(back.parameters!.find((p) => p.id === "Tilt")!.blendShape, { keys: [-1, 0, 1], base: 1 });
-  assert.deepEqual(back.attachments.glow.live2d!.blendShapes, m.attachments.glow.live2d!.blendShapes);
-  assert.deepEqual(back.live2d!.parts.find((p) => p.id === "P_body")!.blendShapes, m.live2d!.parts.find((p) => p.id === "P_body")!.blendShapes);
-  checkGolden(back, "blend reimport", 2e-6, goldenBlend);
+  assert.ok(data.counts.blendShapesArtMeshes > 0 && data.counts.blendShapesParts > 0 && data.counts.blendShapeConstraints > 0);
+  assert.equal(String.fromCharCode(...writeMoc3(data).subarray(0, 4)), "MOC3");
   // renaming a parameter follows it into shapes and constraints; removing one drops them
   const renamed = applyOps(m, [{ op: "renameParameter", id: "Lim", to: "Limit" }, { op: "renameParameter", id: "Vow", to: "Vowel" }] as Op[]).model;
   assert.equal(renamed.attachments.glow.live2d!.blendShapes![0].param, "Vowel");

@@ -1,4 +1,4 @@
-// Live2D Cubism .moc3 binary reader / writer (pure, browser-safe).
+// Live2D Cubism .moc3 binary writer (pure, browser-safe).
 //
 // Layout: a 64-byte header ("MOC3", version byte, endian byte), a section offset table of 160 u32 file offsets at
 // 0x40, reserved space up to 1984, then the body: a count table, the canvas block and ~140 typed arrays (struct of
@@ -267,74 +267,6 @@ function elemSize(t: FieldType): number {
 /** The fields present in a file of this version. */
 export function fieldsFor(version: Moc3Version): Field[] {
   return FIELDS.filter((f) => f.since <= version);
-}
-
-export function readMoc3(bytes: Uint8Array): Moc3Data {
-  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  if (bytes.length < BODY || String.fromCharCode(...bytes.subarray(0, 4)) !== "MOC3") throw new Error("not a .moc3 file (no MOC3 header)");
-  const version = bytes[4] as Moc3Version;
-  if (!(version >= 1 && version <= 5)) throw new Error(`unsupported .moc3 version ${bytes[4]} (known: 1-5, Cubism 3.0-5.0)`);
-  const le = bytes[5] === 0;
-  const slot = (i: number) => dv.getUint32(HEADER + i * 4, le);
-  const countsAt = slot(0);
-  const counts = {} as Record<CountName, number>;
-  COUNT_NAMES.forEach((n, i) => (counts[n] = i < countsFor(version) ? dv.getUint32(countsAt + i * 4, le) : 0));
-  const c = slot(1);
-  const canvas: Moc3Canvas = {
-    pixelsPerUnit: dv.getFloat32(c, le),
-    originX: dv.getFloat32(c + 4, le),
-    originY: dv.getFloat32(c + 8, le),
-    width: dv.getFloat32(c + 12, le),
-    height: dv.getFloat32(c + 16, le),
-    flags: bytes[c + 20],
-  };
-  const arrays: Record<string, Moc3Array> = {};
-  fieldsFor(version).forEach((f, i) => {
-    if (f.type === "runtime") return;
-    const n = counts[f.count];
-    const at = slot(i + 2);
-    if (n > 0 && at + n * elemSize(f.type) > bytes.length) throw new Error(`corrupt .moc3: ${f.name} runs past the end of the file`);
-    switch (f.type) {
-      case "id": {
-        const td = new TextDecoder();
-        const out: string[] = [];
-        for (let k = 0; k < n; k++) {
-          const raw = bytes.subarray(at + k * 64, at + k * 64 + 64);
-          const end = raw.indexOf(0);
-          out.push(td.decode(raw.subarray(0, end < 0 ? 64 : end)));
-        }
-        arrays[f.name] = out;
-        break;
-      }
-      case "u8":
-        arrays[f.name] = bytes.slice(at, at + n);
-        break;
-      case "i16": {
-        const a = new Int16Array(n);
-        for (let k = 0; k < n; k++) a[k] = dv.getInt16(at + k * 2, le);
-        arrays[f.name] = a;
-        break;
-      }
-      case "f32": {
-        const a = new Float32Array(n);
-        for (let k = 0; k < n; k++) a[k] = dv.getFloat32(at + k * 4, le);
-        arrays[f.name] = a;
-        break;
-      }
-      case "u32": {
-        const a = new Uint32Array(n);
-        for (let k = 0; k < n; k++) a[k] = dv.getUint32(at + k * 4, le);
-        arrays[f.name] = a;
-        break;
-      }
-      default: {
-        const a = new Int32Array(n);
-        for (let k = 0; k < n; k++) a[k] = dv.getInt32(at + k * 4, le);
-        arrays[f.name] = a;
-      }
-    }
-  });
-  return { version, counts, canvas, arrays };
 }
 
 /** Writes a little-endian .moc3. Arrays must match the counts (missing arrays are written as zeros). */

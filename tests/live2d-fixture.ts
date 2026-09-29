@@ -2,7 +2,7 @@
 // deformers (bilinear and triangle warps, reflection), keyforms over one and two parameters, opacity and colors,
 // glue, parts, masks and a part draw-order group. Checked against the official Cubism Core with the local tools.
 import { FORMAT_ID } from "../src/core/types.ts";
-import type { Model } from "../src/core/types.ts";
+import type { Live2DPhysics, Live2DPose, Model } from "../src/core/types.ts";
 
 const quad = (x: number, y: number, s: number) => [x, y, x + s, y, x + s, y + s, x, y + s];
 
@@ -153,28 +153,30 @@ export function motion3(restricted = false) {
   };
 }
 
-export function physics3() {
+/** Physics (as physics3 describes it): AngleX swings Arm through a two-point pendulum. */
+export function livePhysics(): Live2DPhysics {
   return {
-    Version: 3,
-    Meta: { PhysicsSettingCount: 1, TotalInputCount: 1, TotalOutputCount: 1, VertexCount: 2, EffectiveForces: { Gravity: { X: 0, Y: -1 }, Wind: { X: 0, Y: 0 } }, PhysicsDictionary: [{ Id: "S1", Name: "Arm swing" }] },
-    PhysicsSettings: [
+    gravity: [0, -1],
+    wind: [0, 0],
+    settings: [
       {
-        Id: "S1",
-        Input: [{ Source: { Target: "Parameter", Id: "AngleX" }, Weight: 100, Type: "X", Reflect: false }],
-        Output: [{ Destination: { Target: "Parameter", Id: "Arm" }, VertexIndex: 1, Scale: 1, Weight: 100, Type: "Angle", Reflect: false }],
-        Vertices: [
-          { Position: { X: 0, Y: 0 }, Mobility: 1, Delay: 1, Acceleration: 1, Radius: 0 },
-          { Position: { X: 0, Y: 10 }, Mobility: 0.9, Delay: 0.8, Acceleration: 1.5, Radius: 10 },
+        id: "S1",
+        name: "Arm swing",
+        inputs: [{ param: "AngleX", weight: 100, type: "X" }],
+        outputs: [{ param: "Arm", vertex: 1, scale: 1, weight: 100, type: "Angle" }],
+        vertices: [
+          { x: 0, y: 0, mobility: 1, delay: 1, acceleration: 1, radius: 0 },
+          { x: 0, y: 10, mobility: 0.9, delay: 0.8, acceleration: 1.5, radius: 10 },
         ],
-        Normalization: { Position: { Minimum: -10, Default: 0, Maximum: 10 }, Angle: { Minimum: -10, Default: 0, Maximum: 10 } },
+        normalization: { position: { min: -10, default: 0, max: 10 }, angle: { min: -10, default: 0, max: 10 } },
       },
     ],
   };
 }
 
 /** Pose groups: the face part and an alternative, switched by the motion's part curves. */
-export function pose3() {
-  return { Type: "Live2D Pose", FadeInTime: 0.5, Groups: [[{ Id: "P_face", Link: [] }, { Id: "P_alt", Link: [] }]] };
+export function livePose(): Live2DPose {
+  return { fadeIn: 0.5, groups: [[{ part: "P_face" }, { part: "P_alt" }]] };
 }
 
 /**

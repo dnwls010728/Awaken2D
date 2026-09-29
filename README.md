@@ -31,7 +31,7 @@ the result. People work on the same file in a web editor. Spine and Live2D data 
 | **Validator** | Checks the structure, then samples every animation for folding triangles and NaNs. |
 | **Two targets** | A model is either a Spine model (bones, weights, skins, constraints) or a Live2D model (parameters, keyforms, deformers, parts). Ops for the other kind are refused, and the editor only shows that kind's tools. |
 | **Spine interop** | Imports Spine 3.8/4.x exports and writes them back. Poses match the official Spine 4.3 runtime, and a round trip without edits gives back the original data. |
-| **Live2D interop** | Imports a Cubism model (model3 + moc3, motions, physics, pose) and exports moc3 + JSON. Poses match the official Cubism Core frame by frame. |
+| **Live2D interop** | Imports a Cubism Editor model (.cmo3, with its .can3 motions) and exports the runtime set (moc3 + model3 / physics3 / motion3 JSON). Poses match the official Cubism Core frame by frame. |
 | **Art import** | PSD/PSB or PNG layers become slots with meshes traced around the art. Each mesh's density depends on the layer's size, shape and name. |
 | **Web editor** | Gizmos, mesh and weight editing, parameter keyforms, a dope-sheet timeline and undo. Edits an agent makes to the file show up live. The UI is in English, Korean and Japanese. |
 | **MCP server** | Import, edit, validate, render and export, all as tools. |
@@ -288,7 +288,7 @@ src/core     format types, math, pose/skinning, animation, geometry, auto weight
              Spine runtime port (spine.ts), Live2D evaluation (live2d*.ts)
 src/import   PSD reader/writer, layer import, skeleton proposal
 src/spine    Spine atlas, JSON import/export, file I/O
-src/live2d   moc3 reader/writer, model3/motion3/physics3 import/export
+src/live2d   Cubism Editor (.cmo3 / .can3) import, moc3 writer, runtime export (model3/motion3/physics3)
 src/render   PNG codec, rasterizer, bitmap font, frame / contact sheet / parameter sheet
 src/cli      `rig` command
 src/mcp      stdio MCP server
@@ -304,5 +304,5 @@ examples     make-mascot.ts builds a character purely from ops; make-psd.ts pain
 - [x] Web editor with live reload of agent edits, undo, localized UI
 - [x] Live2D parameters with linked 2D controls, IK, physics
 - [x] Spine import/export: every constraint type, skins, events and sounds, bounding boxes
-- [x] Live2D import/export: moc3, keyforms and deformers, motions, physics, pose
+- [x] Live2D: .cmo3 / .can3 import, moc3 export, keyforms and deformers, motions, physics, pose
 - [ ] Runtime players (web, Unity/Godot)

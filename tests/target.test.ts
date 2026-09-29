@@ -51,10 +51,11 @@ test("setTarget turns a Spine model with only art into a Live2D model, and says 
 });
 
 test("parameter details: names, groups, decimals, repeat, and renaming follows every reference", async () => {
-  const { live2dRig, motion3, physics3 } = await import("./live2d-fixture.ts");
-  const { applyLive2DJson } = await import("../src/live2d/import.ts");
+  const { live2dRig, livePhysics, motion3 } = await import("./live2d-fixture.ts");
+  const { applyLive2DMotions } = await import("../src/live2d/import.ts");
   const base = live2dRig();
-  applyLive2DJson({ model: base, log: [], warnings: [] }, { motions: [{ group: "Idle", index: 0, file: "m", json: motion3() }], physics: physics3() });
+  base.live2d!.physics = livePhysics();
+  applyLive2DMotions({ model: base, log: [], warnings: [] }, [{ group: "Idle", index: 0, file: "m", json: motion3() }]);
   base.target = "live2d";
   const m = apply(base, [
     { op: "updateParameter", id: "AngleX", name: "Angle X", group: "Face", decimals: 2, repeat: true },
